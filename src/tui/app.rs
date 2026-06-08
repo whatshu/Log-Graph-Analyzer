@@ -1529,4 +1529,313 @@ mod tests {
         app.page_up();
         assert_eq!(app.scroll_offset, initial);
     }
+
+    // ── Collect operations ──
+
+    #[test]
+    fn test_collect_result_summary_count() {
+        assert_eq!(
+            App::collect_result_summary(&CollectResult::Count(42)),
+            "Count: 42"
+        );
+        assert_eq!(
+            App::collect_result_summary(&CollectResult::Count(0)),
+            "Count: 0"
+        );
+    }
+
+    #[test]
+    fn test_collect_result_summary_group_count() {
+        let pairs = vec![
+            ("ERROR".to_string(), 100),
+            ("WARN".to_string(), 50),
+        ];
+        let summary = App::collect_result_summary(&CollectResult::GroupCount(pairs));
+        assert!(summary.contains("GroupCount: 2 groups"));
+        assert!(summary.contains("ERROR"));
+    }
+
+    #[test]
+    fn test_collect_result_summary_topn() {
+        let pairs = vec![("1.1.1.1".to_string(), 300)];
+        let summary = App::collect_result_summary(&CollectResult::TopN(pairs));
+        assert!(summary.contains("Top1"));
+        assert!(summary.contains("1.1.1.1"));
+    }
+
+    #[test]
+    fn test_collect_result_summary_unique() {
+        let vals = vec!["alice".to_string(), "bob".to_string()];
+        let summary = App::collect_result_summary(&CollectResult::Unique(vals));
+        assert_eq!(summary, "Unique: 2 values");
+    }
+
+    #[test]
+    fn test_collect_result_summary_numeric_stats() {
+        let summary = App::collect_result_summary(&CollectResult::NumericStats {
+            count: 10,
+            sum: 55.0,
+            min: 1.0,
+            max: 10.0,
+            avg: 5.5,
+        });
+        assert!(summary.contains("NumStats"));
+        assert!(summary.contains("n=10"));
+    }
+
+    #[test]
+    fn test_collect_result_summary_line_stats() {
+        let summary = App::collect_result_summary(&CollectResult::LineStats {
+            count: 100,
+            total_bytes: 5000,
+            avg_len: 50.0,
+            max_len: 100,
+            min_len: 10,
+        });
+        assert!(summary.contains("LineStats"));
+        assert!(summary.contains("n=100"));
+    }
+
+    #[test]
+    fn test_collect_result_summary_empty_group_count() {
+        let pairs: Vec<(String, usize)> = vec![];
+        let summary = App::collect_result_summary(&CollectResult::GroupCount(pairs));
+        assert!(summary.contains("GroupCount: 0 groups"));
+        assert!(summary.contains("—")); // fallback for empty
+    }
+
+    #[test]
+    fn test_collect_result_detail_count() {
+        let detail = App::collect_result_detail(&CollectResult::Count(99));
+        assert_eq!(detail, "Count: 99 lines");
+    }
+
+    #[test]
+    fn test_collect_result_detail_group_count() {
+        let pairs = vec![("error".to_string(), 5), ("warn".to_string(), 2)];
+        let detail = App::collect_result_detail(&CollectResult::GroupCount(pairs));
+        assert!(detail.contains("Group Count"));
+        assert!(detail.contains("error"));
+        assert!(detail.contains("5"));
+        assert!(detail.contains("warn"));
+        assert!(detail.contains("2"));
+    }
+
+    #[test]
+    fn test_collect_result_detail_topn() {
+        let pairs = vec![("x".to_string(), 1)];
+        let detail = App::collect_result_detail(&CollectResult::TopN(pairs));
+        assert!(detail.contains("Top-1"));
+        assert!(detail.contains("x"));
+    }
+
+    #[test]
+    fn test_collect_result_detail_unique() {
+        let vals = vec!["a".to_string(), "b".to_string()];
+        let detail = App::collect_result_detail(&CollectResult::Unique(vals));
+        assert!(detail.contains("2 distinct"));
+        assert!(detail.contains("a"));
+        assert!(detail.contains("b"));
+    }
+
+    #[test]
+    fn test_collect_result_detail_numeric_stats() {
+        let detail = App::collect_result_detail(&CollectResult::NumericStats {
+            count: 5,
+            sum: 15.0,
+            min: 1.0,
+            max: 5.0,
+            avg: 3.0,
+        });
+        assert!(detail.contains("Numeric Statistics"));
+        assert!(detail.contains("Count:  5"));
+        assert!(detail.contains("Min:    1.0000"));
+        assert!(detail.contains("Max:    5.0000"));
+        assert!(detail.contains("Avg:    3.0000"));
+    }
+
+    #[test]
+    fn test_collect_result_detail_line_stats() {
+        let detail = App::collect_result_detail(&CollectResult::LineStats {
+            count: 10,
+            total_bytes: 500,
+            avg_len: 50.0,
+            max_len: 100,
+            min_len: 10,
+        });
+        assert!(detail.contains("Line Statistics"));
+        assert!(detail.contains("Lines:       10"));
+        assert!(detail.contains("Max Length:  100"));
+        assert!(detail.contains("Min Length:  10"));
+    }
+
+    #[test]
+    fn test_run_collect_count_all() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        app.run_collect(Collector::Count { pattern: None });
+        assert!(app.show_collect_detail);
+        assert!(app.collect_detail.is_some());
+        let detail = app.collect_detail.as_ref().unwrap();
+        assert!(detail.contains("Count: 200 lines"));
+
+        // Should have stored result for HEAD node (node 0)
+        assert!(app.collect_results.contains_key(&0));
+        assert_eq!(app.collect_results.get(&0).unwrap(), "Count: 200");
+    }
+
+    #[test]
+    fn test_run_collect_count_with_pattern() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        app.run_collect(Collector::Count {
+            pattern: Some("ERROR".to_string()),
+        });
+        assert!(app.show_collect_detail);
+        let detail = app.collect_detail.as_ref().unwrap();
+        // ERROR appears every 4th line in 200 lines → 50
+        assert!(detail.contains("Count: 50 lines"));
+    }
+
+    #[test]
+    fn test_run_collect_linestats() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        app.run_collect(Collector::LineStats);
+        assert!(app.show_collect_detail);
+        let detail = app.collect_detail.as_ref().unwrap();
+        assert!(detail.contains("Line Statistics"));
+        assert!(detail.contains("Lines:       200"));
+        // Each line has "2024-01-01 00:00:XX [LEVEL] message N" ~45 chars
+        assert!(detail.contains("Max Length:"));
+        assert!(detail.contains("Min Length:"));
+    }
+
+    #[test]
+    fn test_run_collect_group_count() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        app.run_collect(Collector::GroupCount {
+            pattern: r"\[(\w+)\]".to_string(),
+            group_index: 1,
+        });
+        assert!(app.show_collect_detail);
+        let detail = app.collect_detail.as_ref().unwrap();
+        assert!(detail.contains("Group Count"));
+        // Should find INFO, WARN, ERROR, DEBUG
+        assert!(detail.contains("INFO"));
+        assert!(detail.contains("ERROR"));
+        assert!(detail.contains("WARN"));
+        assert!(detail.contains("DEBUG"));
+    }
+
+    #[test]
+    fn test_run_collect_unique() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        app.run_collect(Collector::Unique {
+            pattern: r"\[(\w+)\]".to_string(),
+            group_index: 1,
+        });
+        let detail = app.collect_detail.as_ref().unwrap();
+        assert!(detail.contains("4 distinct")); // INFO, WARN, ERROR, DEBUG
+    }
+
+    #[test]
+    fn test_run_collect_topn() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        app.run_collect(Collector::TopN {
+            pattern: r"\[(\w+)\]".to_string(),
+            group_index: 1,
+            n: 2,
+        });
+        let detail = app.collect_detail.as_ref().unwrap();
+        assert!(detail.contains("Top-2"));
+    }
+
+    #[test]
+    fn test_run_collect_numeric_stats() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        // message number at end of each line is numeric
+        app.run_collect(Collector::NumericStats {
+            pattern: r"message (\d+)".to_string(),
+            group_index: 1,
+        });
+        let detail = app.collect_detail.as_ref().unwrap();
+        assert!(detail.contains("Numeric Statistics"));
+        assert!(detail.contains("Count:  200"));
+    }
+
+    #[test]
+    fn test_collect_result_appears_in_history_node() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        // Run a collect before building history
+        app.run_collect(Collector::Count { pattern: None });
+        app.build_history();
+
+        // The root node (node 0) should have the collect summary
+        let root_node = app.history_nodes.iter().find(|n| n.id == 0);
+        assert!(root_node.is_some());
+        let summary = root_node.unwrap().collect_summary.as_ref();
+        assert_eq!(summary.unwrap(), "Count: 200");
+    }
+
+    #[test]
+    fn test_collect_detail_popup_closes() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        app.run_collect(Collector::Count { pattern: None });
+        assert!(app.show_collect_detail);
+
+        app.show_collect_detail = false;
+        assert!(!app.show_collect_detail);
+
+        // Status message should have been set
+        assert!(app.status_message.contains("Collect:"));
+    }
+
+    #[test]
+    fn test_run_collect_updates_status_message() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        app.run_collect(Collector::LineStats);
+        assert!(app.status_message.starts_with("Collect:"));
+        assert!(app.status_message.contains("LineStats"));
+    }
+
+    #[test]
+    fn test_run_collect_remembers_multiple_results() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        // Run collect at node 0
+        app.run_collect(Collector::Count { pattern: None });
+        assert_eq!(app.collect_results.get(&0).unwrap(), "Count: 200");
+
+        // Apply an operation to create a new node
+        app.queue_operation(Operation::Filter {
+            pattern: "ERROR".to_string(),
+            keep: true,
+        });
+        app.apply_pending();
+
+        // Run another collect at the new HEAD
+        app.run_collect(Collector::Count { pattern: None });
+        let new_head = app.repo.borrow().as_ref().unwrap().head_node_id();
+        assert!(app.collect_results.contains_key(&new_head));
+        assert_eq!(app.collect_results.get(&new_head).unwrap(), "Count: 50");
+    }
 }

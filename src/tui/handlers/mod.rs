@@ -895,3 +895,203 @@ fn handle_input(app: &mut App, prompt: &str, input: &str) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::app::{App, ViewKind};
+    use lga_core::engine::Collector;
+    use lga_core::operator::Operation;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn make_test_log(lines: usize) -> String {
+        (0..lines)
+            .map(|i| {
+                let level = match i % 4 {
+                    0 => "INFO",
+                    1 => "WARN",
+                    2 => "ERROR",
+                    _ => "DEBUG",
+                };
+                format!(
+                    "2024-01-01 00:00:{:02} [{}] message {}",
+                    i % 60,
+                    level,
+                    i
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn setup_app(tmp: &TempDir) -> App {
+        let log_file = tmp.path().join("test.log");
+        let content = make_test_log(200);
+        fs::write(&log_file, &content).unwrap();
+        let ws_root = tmp.path().join("workspace");
+        let ws = lga_core::repo::Workspace::open(&ws_root).unwrap();
+        let _ = ws.migrate_if_needed();
+        ws.import_file("test", &log_file).unwrap();
+        App::new(&ws_root, Some("test")).unwrap()
+    }
+
+    // ── execute_collect parsing tests ──
+
+    #[test]
+    fn test_execute_collect_count_no_pattern() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        execute_collect(&mut app, "count");
+        assert!(app.show_collect_detail);
+        let detail = app.collect_detail.as_ref().unwrap();
+        assert!(detail.contains("Count: 200 lines"));
+    }
+
+    #[test]
+    fn test_execute_collect_count_with_pattern() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        execute_collect(&mut app, "count ERROR");
+        assert!(app.show_collect_detail);
+        let detail = app.collect_detail.as_ref().unwrap();
+        assert!(detail.contains("Count: 50 lines"));
+    }
+
+    #[test]
+    fn test_execute_collect_group_count() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        execute_collect(&mut app, r"group \[(\w+)\] 1");
+        assert!(app.show_collect_detail);
+        let detail = app.collect_detail.as_ref().unwrap();
+        assert!(detail.contains("Group Count"));
+        assert!(detail.contains("INFO"));
+        assert!(detail.contains("ERROR"));
+    }
+
+    #[test]
+    fn test_execute_collect_topn() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        execute_collect(&mut app, r"topn \[(\w+)\] 1 3");
+        assert!(app.show_collect_detail);
+        let detail = app.collect_detail.as_ref().unwrap();
+        assert!(detail.contains("Top-3") || detail.contains("Top-4"));
+    }
+
+    #[test]
+    fn test_execute_collect_unique() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        execute_collect(&mut app, r"unique \[(\w+)\] 1");
+        let detail = app.collect_detail.as_ref().unwrap();
+        assert!(detail.contains("4 distinct"));
+    }
+
+    #[test]
+    fn test_execute_collect_numstats() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        execute_collect(&mut app, r"numstats message (\d+) 1");
+        assert!(app.show_collect_detail);
+        let detail = app.collect_detail.as_ref().unwrap();
+        assert!(detail.contains("Numeric Statistics"));
+    }
+
+    #[test]
+    fn test_execute_collect_linestats() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        execute_collect(&mut app, "linestats");
+        assert!(app.show_collect_detail);
+        let detail = app.collect_detail.as_ref().unwrap();
+        assert!(detail.contains("Line Statistics"));
+    }
+
+    #[test]
+    fn test_execute_collect_unknown_type_error() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        execute_collect(&mut app, "bogus args");
+        assert!(!app.show_collect_detail);
+        assert!(app.error_message.is_some());
+        assert!(app.error_message.as_ref().unwrap().contains("Unknown collect type"));
+    }
+
+    #[test]
+    fn test_execute_collect_missing_pattern_error() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        // group without pattern should error
+        execute_collect(&mut app, "group");
+        assert!(!app.show_collect_detail);
+        assert!(app.error_message.is_some());
+        assert!(app.error_message.as_ref().unwrap().contains("Usage: group"));
+    }
+
+    #[test]
+    fn test_execute_collect_topn_with_defaults() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        // Only provide pattern, group_index and n should default
+        execute_collect(&mut app, r"topn \[(\w+)\]");
+        assert!(app.show_collect_detail);
+        let detail = app.collect_detail.as_ref().unwrap();
+        // Default n=10, group_index=1
+        assert!(detail.contains("Top-"));
+    }
+
+    #[test]
+    fn test_collect_command_prefix_routing() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        // Simulate what happens when user types ":collect count"
+        execute_command(&mut app, "collect count");
+        assert!(app.show_collect_detail);
+        assert!(app.collect_detail.as_ref().unwrap().contains("Count: 200 lines"));
+    }
+
+    #[test]
+    fn test_collect_command_prefix_with_args() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        // With extra whitespace
+        execute_command(&mut app, "collect   count   ERROR");
+        assert!(app.show_collect_detail);
+        assert!(app.collect_detail.as_ref().unwrap().contains("Count: 50 lines"));
+    }
+
+    #[test]
+    fn test_collect_direct_count_command() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        // Direct :count command (without collect prefix)
+        execute_command(&mut app, "count ERROR");
+        assert!(app.show_collect_detail);
+        assert!(app.collect_detail.as_ref().unwrap().contains("Count: 50 lines"));
+    }
+
+    #[test]
+    fn test_collect_direct_linestats_command() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        execute_command(&mut app, "linestats");
+        assert!(app.show_collect_detail);
+        assert!(app.collect_detail.as_ref().unwrap().contains("Line Statistics"));
+    }
+}
