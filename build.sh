@@ -262,7 +262,14 @@ do_ci() {
     local dist_dir="$ROOT_DIR/dist"
     mkdir -p "$dist_dir"
 
+    # ── Read version metadata ───────────────────────────────────────
+    local VERSION BUILD_ID BUILD_DATE
+    VERSION=$(cat "$ROOT_DIR/VERSION")
+    BUILD_ID=$(cat "$ROOT_DIR/BUILD_ID")
+    BUILD_DATE=$(date +%Y%m%d)
+
     info "CI build: all platform wheels + packages -> dist/"
+    info "Version: ${VERSION}  Build: $(printf '%04d' ${BUILD_ID})  Date: ${BUILD_DATE}"
 
     # Collect proxy env vars for Docker containers.
     # `docker run` does NOT inherit host env vars automatically.
@@ -349,15 +356,35 @@ do_ci() {
     info "Building system packages..."
     do_pkg "$WHEEL"   # reuse already-built native wheel; no second compile
 
+    # ---- Build native TUI binary ----
+    info "Building native TUI binary..."
+    cargo build --bin la --no-default-features --release
+    ok "TUI binary built"
+
+    # ---- Organize into BUILD/{YYYYMMDD}_{VERSION}_{ID}/ ----
+    local BUILD_DIR="BUILD/${BUILD_DATE}_${VERSION}_$(printf '%04d' ${BUILD_ID})"
+    mkdir -p "${BUILD_DIR}"
+
+    # Copy all dist artifacts (wheels, debs, rpms)
+    shopt -s nullglob
+    for f in "$dist_dir"/*; do
+        cp -r "$f" "${BUILD_DIR}/"
+    done
+
+    # Copy TUI binary
+    cp target/release/la "${BUILD_DIR}/la" 2>/dev/null || true
+
+    # Increment BUILD_ID
+    local NEW_ID=$((BUILD_ID + 1))
+    echo "${NEW_ID}" > "$ROOT_DIR/BUILD_ID"
+
     echo ""
-    info "All artifacts in dist/:"
-    ls -1h "$dist_dir"/ 2>/dev/null
+    info "Published to ${BUILD_DIR}/"
+    ls -1h "${BUILD_DIR}"/ 2>/dev/null
     echo ""
-    local whl_count deb_count rpm_count
-    whl_count=$(ls -1 "$dist_dir"/*.whl 2>/dev/null | wc -l)
-    deb_count=$(ls -1 "$dist_dir"/*.deb 2>/dev/null | wc -l)
-    rpm_count=$(ls -1 "$dist_dir"/*.rpm 2>/dev/null | wc -l)
-    ok "CI complete: ${whl_count} wheel(s), ${deb_count} deb(s), ${rpm_count} rpm(s)"
+    local artifact_count
+    artifact_count=$(find "${BUILD_DIR}" -type f | wc -l)
+    ok "CI complete: ${artifact_count} artifact(s) — BUILD_ID bumped to $(printf '%04d' ${NEW_ID})"
 }
 
 # ---------- dispatch ----------

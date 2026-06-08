@@ -12,6 +12,7 @@ BUILD/
 .pytest_cache/
 .bin/
 log/
+.log_analyzer/
 
 # Large test / benchmark log files — never commit these
 *.log
