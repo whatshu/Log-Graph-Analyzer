@@ -16,7 +16,7 @@ use app::{App, InputMode};
 use event::{install_panic_hook, restore_terminal, setup_terminal};
 use ui::render;
 
-use log_analyzer_core::error::Result;
+use lga_core::error::Result;
 
 pub fn run(workspace_root: &Path, initial_repo: Option<&str>) -> Result<()> {
     // Validate terminal capabilities before entering TUI mode.
@@ -56,7 +56,7 @@ pub fn run(workspace_root: &Path, initial_repo: Option<&str>) -> Result<()> {
 
     // Tmux: set window title if in tmux
     if app.in_tmux {
-        tmux_set_title("log-analyzer");
+        tmux_set_title("lga");
     }
 
     setup_terminal()?;
@@ -70,10 +70,10 @@ pub fn run(workspace_root: &Path, initial_repo: Option<&str>) -> Result<()> {
 
     // Tmux: reset title
     if app.in_tmux {
-        tmux_set_title("log-analyzer (exited)");
+        tmux_set_title("lga (exited)");
     }
 
-    result.map_err(|e| log_analyzer_core::error::LogAnalyzerError::Io(e))?;
+    result.map_err(|e| lga_core::error::LogAnalyzerError::Io(e))?;
     Ok(())
 }
 
@@ -112,6 +112,17 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('?') => {
                 app.show_help = false;
+                return;
+            }
+            _ => {}
+        }
+    }
+
+    // If collect detail popup is showing, close it on c, q, or Esc
+    if app.show_collect_detail {
+        match key.code {
+            KeyCode::Char('c') | KeyCode::Char('q') | KeyCode::Esc => {
+                app.show_collect_detail = false;
                 return;
             }
             _ => {}

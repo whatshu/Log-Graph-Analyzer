@@ -4,7 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Tabs};
 use ratatui::Frame;
 
-use log_analyzer_core::repo::LogRepo;
+use lga_core::repo::LogRepo;
 
 use super::app::{App, InputMode, ViewKind};
 use super::file_browser;
@@ -559,6 +559,15 @@ fn render_help_overlay(f: &mut Frame, area: Rect, _app: &App) {
         Line::from(vec![Span::styled("  R            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Replace (uses search pattern)")]),
         Line::from(vec![Span::styled("  u            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Undo last operation")]),
         Line::from(vec![Span::styled("  :            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Command mode")]),
+        Line::from(""),
+        Line::from(vec![Span::styled("  Collect     ", Style::default().fg(COLOR_ACCENT))]),
+        Line::from(vec![Span::styled("  c            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Enter collect command (:collect ...)")]),
+        Line::from(vec![Span::styled("  count <pat>  ", Style::default().fg(COLOR_ACCENT)), Span::raw("Count lines matching pattern")]),
+        Line::from(vec![Span::styled("  group <p> <i>", Style::default().fg(COLOR_ACCENT)), Span::raw("Group count by capture group")]),
+        Line::from(vec![Span::styled("  topn <p> <i> <n>", Style::default().fg(COLOR_ACCENT)), Span::raw("Top-N by capture group")]),
+        Line::from(vec![Span::styled("  unique <p> <i>", Style::default().fg(COLOR_ACCENT)), Span::raw("Distinct values of group")]),
+        Line::from(vec![Span::styled("  numstats <p> <i>", Style::default().fg(COLOR_ACCENT)), Span::raw("Numeric stats (min/max/avg)")]),
+        Line::from(vec![Span::styled("  linestats    ", Style::default().fg(COLOR_ACCENT)), Span::raw("Line-length statistics")]),
         Line::from(""),
         Line::from(vec![Span::styled("  Views       ", Style::default().fg(COLOR_ACCENT))]),
         Line::from(vec![Span::styled("  l            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Log view")]),

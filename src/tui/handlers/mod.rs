@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use log_analyzer_core::engine::Collector;
-use log_analyzer_core::operator::Operation;
+use lga_core::engine::Collector;
+use lga_core::operator::Operation;
 use std::path::Path;
 
 use super::app::{App, InputMode, ViewKind};
@@ -449,7 +449,7 @@ fn execute_command(app: &mut App, cmd: &str) {
             if let Some(ref mut r) = *repo_mut {
                 r.append_file(Path::new(path)).map(|n| n)
             } else {
-                Err(log_analyzer_core::error::LogAnalyzerError::Repo(
+                Err(lga_core::error::LogAnalyzerError::Repo(
                     "No repo open".to_string(),
                 ))
             }
@@ -763,7 +763,7 @@ fn execute_collect(app: &mut App, sub: &str) {
 }
 
 /// Resolve a pattern that may be a @name reference to a saved filter.
-fn resolve_pattern(config: &log_analyzer_core::config::Config, pattern: &str) -> String {
+fn resolve_pattern(config: &lga_core::config::Config, pattern: &str) -> String {
     let trimmed = pattern.trim();
     if let Some(name) = trimmed.strip_prefix('@') {
         config.get_filter(name).map(|s| s.to_string()).unwrap_or_else(|| {
@@ -839,7 +839,7 @@ fn handle_input(app: &mut App, prompt: &str, input: &str) {
             if let Some(ref mut r) = *repo_mut {
                 r.append_file(path).map(|n| n)
             } else {
-                Err(log_analyzer_core::error::LogAnalyzerError::Repo(
+                Err(lga_core::error::LogAnalyzerError::Repo(
                     "No repo open".to_string(),
                 ))
             }

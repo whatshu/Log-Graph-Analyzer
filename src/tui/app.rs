@@ -2,12 +2,12 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
 
-use log_analyzer_core::cache::CacheManager;
-use log_analyzer_core::config::Config;
-use log_analyzer_core::engine::{CollectResult, Collector};
-use log_analyzer_core::error::Result;
-use log_analyzer_core::operator::Operation;
-use log_analyzer_core::repo::{LogRepo, Workspace};
+use lga_core::cache::CacheManager;
+use lga_core::config::Config;
+use lga_core::engine::{CollectResult, Collector};
+use lga_core::error::Result;
+use lga_core::operator::Operation;
+use lga_core::repo::{LogRepo, Workspace};
 
 use std::path::PathBuf;
 
@@ -157,7 +157,7 @@ impl App {
                 // Fallback: in-memory only (directory inaccessible)
                 CacheManager::new(
                     PathBuf::from(".log_analyzer").join("cache"),
-                    log_analyzer_core::cache::CacheConfig::default(),
+                    lga_core::cache::CacheConfig::default(),
                 )
                 .unwrap_or_else(|_| {
                     // This shouldn't fail with default config since we create dirs
@@ -242,7 +242,7 @@ impl App {
                 self.status_message = format!("Opened repo '{}'", name);
                 let _ = self.workspace.set_active(name);
                 if self.in_tmux {
-                    set_tmux_title(&format!("log-analyzer: {}", name));
+                    set_tmux_title(&format!("lga: {}", name));
                 }
             }
             Err(e) => {
@@ -486,7 +486,7 @@ impl App {
             let repo_ref = self.repo.borrow();
             repo_ref
                 .as_ref()
-                .map(|r| log_analyzer_core::cache::hash_repo_path(r.path()))
+                .map(|r| lga_core::cache::hash_repo_path(r.path()))
                 .unwrap_or_default()
         };
 
@@ -501,7 +501,7 @@ impl App {
             if let Some(ref r) = *repo_ref {
                 r.view_node(node_id)?
             } else {
-                return Err(log_analyzer_core::error::LogAnalyzerError::Repo(
+                return Err(lga_core::error::LogAnalyzerError::Repo(
                     "No repo open".to_string(),
                 ));
             }
