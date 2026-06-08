@@ -4,8 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT_DIR"
 
-# Read version from Cargo.toml
-VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+# Read version from VERSION file (single source of truth)
+VERSION=$(cat "$ROOT_DIR/VERSION")
 
 # ---------- helpers ----------
 info()  { printf '\033[1;34m[INFO]\033[0m  %s\n' "$*"; }
@@ -106,6 +106,20 @@ done
 
 check_prereqs
 
+# ── Sync VERSION → Cargo.toml + pyproject.toml ─────────────────────────
+# VERSION is the single source of truth. Every build rewrites the version
+# fields in Cargo.toml and pyproject.toml so that maturin (which reads
+# those files directly) produces artifacts with the correct version.
+sync_version() {
+    local ver="$1"
+    local cargo_toml="$ROOT_DIR/Cargo.toml"
+    local pyproject_toml="$ROOT_DIR/pyproject.toml"
+
+    sed -i "s/^version = \"[^\"]*\"/version = \"${ver}\"/" "$cargo_toml"
+    sed -i "s/^version = \"[^\"]*\"/version = \"${ver}\"/" "$pyproject_toml"
+}
+sync_version "$VERSION"
+
 # ---------- build ----------
 do_build() {
     if [[ "$MODE" == "dev" ]]; then
@@ -119,6 +133,51 @@ do_build() {
     ok "Wheel built: $WHEEL"
 }
 
+# ---------- user config ----------
+install_user_config() {
+    local config_dir="$HOME/.log_analyzer"
+    local config_file="$config_dir/config.toml"
+
+    if [[ -f "$config_file" ]]; then
+        info "User config already exists: $config_file (skipped)"
+        return 0
+    fi
+
+    info "Creating user config with preset filters..."
+    mkdir -p "$config_dir"
+    cat > "$config_file" <<'CONFEOF'
+# log-analyzer user configuration
+# ~/.log_analyzer/config.toml — user-level presets and settings
+
+[filters]
+# ── Built-in preset filter patterns ─────────────────────────────────
+# Use with :f @name or :r @name/replacement/ in the TUI,
+# or reference by name in CLI filter commands.
+
+timestamp = '\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}'
+level = '\b(TRACE|DEBUG|INFO|NOTICE|WARN|WARNING|ERROR|FATAL|CRITICAL)\b'
+service = '\bservice[=:]\s*\S+'
+host = '\b(?:host|hostname)[=:]\s*\S+'
+pid = '\bpid[=:]\s*\d+'
+tid = '\b(?:tid|thread_id|threadId)[=:]\s*\d+'
+request_id = '\b(?:request_id|requestId|req_id|reqId)[=:]\s*\S+'
+trace_id = '\b(?:trace_id|traceId|trace-id)[=:]\s*\S+'
+span_id = '\b(?:span_id|spanId|span-id)[=:]\s*\S+'
+user_id = '\b(?:user_id|userId|uid)[=:]\s*\S+'
+client_ip = '\b(?:\d{1,3}\.){3}\d{1,3}\b'
+status_code = '\b[1-5]\d{2}\b'
+latency = '\b(?:latency|duration|elapsed|took|cost)[=:]\s*\d+(?:\.\d+)?\s*(?:ms|us|ns|s)?'
+error_code = '\b(?:error_code|err_code|errcode|errno)[=:]\s*\S+'
+module = '\bmodule[=:]\s*\S+'
+function = '\b(?:function|func|fn|method|handler)[=:]\s*\S+'
+message = '\b(?:message|msg|text|body)[=:]\s*'
+error = '(?i)\b(?:error|err|fail|fatal|exception|crash)\b'
+warn = '(?i)\b(?:warn|warning)\b'
+json = '^\s*[{[]'
+CONFEOF
+    ok "User config created: $config_file"
+}
+
 do_install() {
     if [[ "$MODE" == "dev" ]]; then
         info "Installing in editable/development mode..."
@@ -130,6 +189,9 @@ do_install() {
         pip install --force-reinstall "$WHEEL"
         ok "Installed from $WHEEL"
     fi
+
+    # Create user-level config with preset filters if not present
+    install_user_config
 }
 
 do_test() {
@@ -226,6 +288,40 @@ WRAPPER
     else
         info "TUI binary not found (build with: cargo build --bin la --no-default-features --release) — skipping."
     fi
+
+    # Step 3c: create postinstall script for system-level config preset
+    cat > "$staging/postinstall.sh" <<'POSTINST'
+#!/bin/sh
+# Create system-level config with preset filters if not present
+SYS_CONF="/etc/log-analyzer/config.toml"
+if [ ! -f "$SYS_CONF" ]; then
+    mkdir -p /etc/log-analyzer
+    cat > "$SYS_CONF" <<'CONFEOF'
+[filters]
+timestamp = '\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}'
+level = '\b(TRACE|DEBUG|INFO|NOTICE|WARN|WARNING|ERROR|FATAL|CRITICAL)\b'
+service = '\bservice[=:]\s*\S+'
+host = '\b(?:host|hostname)[=:]\s*\S+'
+pid = '\bpid[=:]\s*\d+'
+tid = '\b(?:tid|thread_id|threadId)[=:]\s*\d+'
+request_id = '\b(?:request_id|requestId|req_id|reqId)[=:]\s*\S+'
+trace_id = '\b(?:trace_id|traceId|trace-id)[=:]\s*\S+'
+span_id = '\b(?:span_id|spanId|span-id)[=:]\s*\S+'
+user_id = '\b(?:user_id|userId|uid)[=:]\s*\S+'
+client_ip = '\b(?:\d{1,3}\.){3}\d{1,3}\b'
+status_code = '\b[1-5]\d{2}\b'
+latency = '\b(?:latency|duration|elapsed|took|cost)[=:]\s*\d+(?:\.\d+)?\s*(?:ms|us|ns|s)?'
+error_code = '\b(?:error_code|err_code|errcode|errno)[=:]\s*\S+'
+module = '\bmodule[=:]\s*\S+'
+function = '\b(?:function|func|fn|method|handler)[=:]\s*\S+'
+message = '\b(?:message|msg|text|body)[=:]\s*'
+error = '(?i)\b(?:error|err|fail|fatal|exception|crash)\b'
+warn = '(?i)\b(?:warn|warning)\b'
+json = '^\s*[{[]'
+CONFEOF
+fi
+POSTINST
+    chmod +x "$staging/postinstall.sh"
 
     # Step 4: generate nfpm config from template
     ensure_nfpm || { err "Cannot build packages without nfpm"; rm -rf "$staging"; return 1; }
@@ -361,18 +457,30 @@ do_ci() {
     cargo build --bin la --no-default-features --release
     ok "TUI binary built"
 
+    # ---- Detect platform ----
+    local NATIVE_OS NATIVE_ARCH PLATFORM
+    NATIVE_OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+    NATIVE_ARCH=$(uname -m)
+    PLATFORM="${NATIVE_OS}-${NATIVE_ARCH}"
+
     # ---- Organize into BUILD/{YYYYMMDD}_{VERSION}_{ID}/ ----
     local BUILD_DIR="BUILD/${BUILD_DATE}_${VERSION}_$(printf '%04d' ${BUILD_ID})"
-    mkdir -p "${BUILD_DIR}"
+    mkdir -p "${BUILD_DIR}/tui" "${BUILD_DIR}/lib" "${BUILD_DIR}/pkg"
 
-    # Copy all dist artifacts (wheels, debs, rpms)
+    # TUI binary — add platform suffix to avoid cross-platform name collisions
+    cp target/release/la "${BUILD_DIR}/tui/la-${PLATFORM}" 2>/dev/null || true
+
+    # lib artifacts (wheels) — platform is already encoded in wheel filenames
     shopt -s nullglob
-    for f in "$dist_dir"/*; do
-        cp -r "$f" "${BUILD_DIR}/"
+    for f in "$dist_dir"/*.whl; do
+        cp "$f" "${BUILD_DIR}/lib/"
     done
 
-    # Copy TUI binary
-    cp target/release/la "${BUILD_DIR}/la" 2>/dev/null || true
+    # pkg artifacts (deb, rpm) — arch is already encoded in package filenames
+    shopt -s nullglob
+    for f in "$dist_dir"/*.deb "$dist_dir"/*.rpm; do
+        cp "$f" "${BUILD_DIR}/pkg/"
+    done
 
     # Increment BUILD_ID
     local NEW_ID=$((BUILD_ID + 1))
@@ -380,7 +488,9 @@ do_ci() {
 
     echo ""
     info "Published to ${BUILD_DIR}/"
-    ls -1h "${BUILD_DIR}"/ 2>/dev/null
+    find "${BUILD_DIR}" -type f | sort | while read f; do
+        echo "  ${f#${BUILD_DIR}/}"
+    done
     echo ""
     local artifact_count
     artifact_count=$(find "${BUILD_DIR}" -type f | wc -l)

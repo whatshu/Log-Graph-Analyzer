@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "log-analyzer"
-version = "0.1.0"
+version = "0.0.1"
 description = "High-performance log analyzer for large text files (>10GB)"
 requires-python = ">=3.10"
 dependencies = [
