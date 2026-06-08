@@ -38,6 +38,66 @@ pip install -e ".[dev]"       # 可编辑安装（使用 maturin）
 maturin build --release       # 构建 .whl 到 target/wheels/
 ```
 
+## 调用方式
+
+log-analyzer 支持四种不同的使用方式：
+
+### 1. Python CLI 命令行 (`log-analyzer`)
+
+主要使用方式。通过 pip 安装为 console script：
+
+```bash
+pip install -e ".[dev]"
+log-analyzer --help
+```
+
+所有日志操作（import、filter、replace、search、undo、export 等）和仓库管理命令（`repo list`、`clone`、`remove` 等）均可通过 CLI 使用。详见下方[快速开始](#快速开始)和 [CLI 命令参考](#cli-命令参考)。
+
+### 2. Rust 原生 TUI (`la`)
+
+基于 ratatui + crossterm 的交互式终端界面。通过 `la` 二进制启动：
+
+```bash
+cargo run --                                          # 开发模式
+cargo build --release && ./target/release/la           # 发布构建
+
+# 参数
+la -w .logrepo -r myrepo    # 指定工作区和仓库
+```
+
+提供可视化的操作历史树、文件浏览器、操作栏和 tmux 支持。
+
+### 3. Python 库导入
+
+在脚本或 notebook 中以编程方式导入使用：
+
+```python
+from log_analyzer import Workspace, LogRepo
+
+ws = Workspace(".logrepo")
+repo = ws.import_file("server.log", "my_repo")
+repo.filter("ERROR", keep=True)
+repo.export("output.log")
+```
+
+完整 API 参考见 [Python API](#python-api)。
+
+### 4. Rust 库引入
+
+在其他 Rust 项目中使用核心引擎：
+
+```toml
+[dependencies]
+log_analyzer_core = { path = "/path/to/log-analyzer", default-features = false }
+```
+
+```rust
+use log_analyzer_core::repo;
+use log_analyzer_core::engine;
+```
+
+关闭默认 features 可跳过 Python 绑定，获得纯 Rust 库。
+
 ## 快速开始
 
 ```bash

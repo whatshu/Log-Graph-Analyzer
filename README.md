@@ -38,6 +38,66 @@ pip install -e ".[dev]"       # Editable install (uses maturin)
 maturin build --release       # Build .whl to target/wheels/
 ```
 
+## Invocation Methods
+
+log-analyzer can be used in four different ways:
+
+### 1. Python CLI (`log-analyzer`)
+
+The primary interface. Installed as a console script via pip:
+
+```bash
+pip install -e ".[dev]"
+log-analyzer --help
+```
+
+All log operations (import, filter, replace, search, undo, export, etc.) and repository management commands (`repo list`, `clone`, `remove`, etc.) are available through the CLI. See [Quick Start](#quick-start) and [CLI Reference](#cli-reference) below.
+
+### 2. Rust Native TUI (`la`)
+
+An interactive terminal UI built with ratatui + crossterm. Launched via the `la` binary:
+
+```bash
+cargo run --                                          # Development
+cargo build --release && ./target/release/la           # Release build
+
+# Options
+la -w .logrepo -r myrepo    # Specify workspace and repo
+```
+
+Provides a visual interface with operation history tree, file browser, action bar, and tmux support.
+
+### 3. Python Library
+
+Import and use log-analyzer programmatically in scripts or notebooks:
+
+```python
+from log_analyzer import Workspace, LogRepo
+
+ws = Workspace(".logrepo")
+repo = ws.import_file("server.log", "my_repo")
+repo.filter("ERROR", keep=True)
+repo.export("output.log")
+```
+
+See [Python API](#python-api) for the full API reference.
+
+### 4. Rust Library
+
+Use the core engine as a Rust library in other projects:
+
+```toml
+[dependencies]
+log_analyzer_core = { path = "/path/to/log-analyzer", default-features = false }
+```
+
+```rust
+use log_analyzer_core::repo;
+use log_analyzer_core::engine;
+```
+
+Disabling default features skips Python bindings, giving you a pure Rust library.
+
 ## Quick Start
 
 ```bash
