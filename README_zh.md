@@ -67,6 +67,20 @@ la -w .logrepo -r myrepo    # 指定工作区和仓库
 
 提供可视化的操作历史树、文件浏览器、操作栏和 tmux 支持。
 
+#### 终端兼容性
+
+TUI 可在大多数现代终端中使用。已知兼容的终端：
+
+- **Linux**: xterm, gnome-terminal, konsole, alacritty, kitty, st, tmux, screen
+- **macOS**: Terminal.app, iTerm2, alacritty, kitty
+- **Windows**: Windows Terminal, alacritty, wezterm
+
+**要求**: 终端必须支持 ANSI 转义序列（交替屏幕、raw 模式）。大多数终端模拟器均支持。以下环境无法运行：`TERM=dumb`、CI 运行器、无 pty 的裸 `sh`。
+
+**ASCII 降级**: 如果 locale 未报告 UTF-8（例如 `LANG=C`），TUI 会自动切换为 ASCII 安全字符：树形连接器使用 `|`/`` ` ``/`-`，项目符号使用 `*`/`o`，文件图标使用 `[D]`/`[F]`。
+
+**崩溃安全**: 内置 panic hook 确保即使应用崩溃，终端也能恢复（退出交替屏幕、重新显示光标）。
+
 ### 3. Python 库导入
 
 在脚本或 notebook 中以编程方式导入使用：
@@ -417,6 +431,22 @@ maturin publish --repository testpypi   # 先在 TestPyPI 测试
 | Windows x86_64 | `x86_64-pc-windows-msvc` |
 
 每个 wheel 内嵌编译好的 Rust 扩展——终端用户只需 `pip install`，无需 Rust 工具链。
+
+### TUI 二进制下载
+
+预构建的 `la` 二进制可从 [GitHub Releases](https://github.com/log-analyzer/log-analyzer/releases) 下载。根据平台选择：
+
+| 下载文件 | 类型 | 适用环境 |
+|----------|------|----------|
+| `la-x86_64-unknown-linux-musl` | 静态链接 (musl) | **任意 Linux 发行版** — 真正可移植，无需 glibc |
+| `la-aarch64-unknown-linux-musl` | 静态链接 (musl) | ARM Linux（树莓派、AWS Graviton） |
+| `la-x86_64-unknown-linux-gnu` | 动态链接 (glibc ≥ 2.35) | Ubuntu 22.04+、Fedora 36+、Debian 13+ |
+| `la-x86_64-unknown-linux-gnu-legacy` | 动态链接 (glibc ≥ 2.28) | RHEL 8+、CentOS 8+、Debian 10+、Ubuntu 20.04+ |
+| `la-x86_64-apple-darwin` | macOS Intel | Intel CPU 的 Mac |
+| `la-aarch64-apple-darwin` | macOS ARM | Apple Silicon Mac |
+| `la-x86_64-pc-windows-msvc` | Windows | Windows 10/11 |
+
+**推荐**: Linux 上优先使用 **musl** 版本——可在任意 Linux 发行版运行，不受 glibc 版本限制。如果 musl 版本不适用于你的架构，请选择与你发行版 glibc 匹配的 GNU 版本。
 
 ## 许可证
 

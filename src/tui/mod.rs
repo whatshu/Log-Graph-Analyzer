@@ -13,12 +13,38 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::CrosstermBackend;
 
 use app::{App, InputMode};
-use event::{restore_terminal, setup_terminal};
+use event::{install_panic_hook, restore_terminal, setup_terminal};
 use ui::render;
 
 use log_analyzer_core::error::Result;
 
 pub fn run(workspace_root: &Path, initial_repo: Option<&str>) -> Result<()> {
+    // Validate terminal capabilities before entering TUI mode.
+    // TERM=dumb means we're in a non-interactive terminal (CI, pipes, etc.).
+    match std::env::var("TERM") {
+        Ok(ref t) if t == "dumb" || t.is_empty() => {
+            eprintln!(
+                "Error: TERM={} is not sufficient for the TUI. \
+                 Please run in a terminal that supports ANSI escape sequences \
+                 (xterm, gnome-terminal, tmux, etc.).",
+                t
+            );
+            std::process::exit(1);
+        }
+        Err(_) => {
+            eprintln!(
+                "Warning: TERM is not set. The TUI may not work correctly. \
+                 Consider setting TERM=xterm-256color."
+            );
+        }
+        _ => {} // OK — proceed
+    }
+
+    // Install a panic hook that restores the terminal so the user isn't
+    // left with a broken terminal (raw mode, no cursor, stuck in alt screen)
+    // if the app panics.
+    install_panic_hook();
+
     // Clean terminal state on entry
     let _ = crossterm::execute!(
         io::stdout(),

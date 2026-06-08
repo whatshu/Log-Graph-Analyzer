@@ -201,6 +201,7 @@ pub fn render_file_browser(
     f: &mut ratatui::Frame,
     area: ratatui::layout::Rect,
     fb: &FileBrowser,
+    ascii_only: bool,
 ) {
     use ratatui::layout::{Constraint, Direction, Layout};
     use ratatui::style::{Color, Style};
@@ -237,7 +238,11 @@ pub fn render_file_browser(
         .map(|(i, entry)| {
             let idx = start + i;
             let is_selected = idx == fb.selected_index;
-            let icon = if entry.is_dir { "📁 " } else { "📄 " };
+            let icon = if entry.is_dir {
+                if ascii_only { "[D] " } else { "📁 " }
+            } else {
+                if ascii_only { "[F] " } else { "📄 " }
+            };
             let size_str = if entry.is_dir {
                 String::from("<DIR>")
             } else {

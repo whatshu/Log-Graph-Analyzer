@@ -142,7 +142,7 @@ fn render_file_browser_fullscreen(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(header, chunks[0]);
 
     // Browser
-    file_browser::render_file_browser(f, chunks[1], &app.file_browser);
+    file_browser::render_file_browser(f, chunks[1], &app.file_browser, app.ascii_only);
 
     // Hints
     file_browser::render_file_browser_hints(f, chunks[2]);
@@ -338,9 +338,17 @@ fn render_history(f: &mut Frame, area: Rect, app: &App) {
 
             // Cursor marker
             let marker = if is_cursor {
-                Span::styled("● ", Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD))
+                if app.ascii_only {
+                    Span::styled("* ", Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD))
+                } else {
+                    Span::styled("● ", Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD))
+                }
             } else {
-                Span::styled("◦ ", Style::default().fg(COLOR_DIM))
+                if app.ascii_only {
+                    Span::styled("o ", Style::default().fg(COLOR_DIM))
+                } else {
+                    Span::styled("◦ ", Style::default().fg(COLOR_DIM))
+                }
             };
 
             // Node ID (colored by cursor)
@@ -388,7 +396,11 @@ fn render_history(f: &mut Frame, area: Rect, app: &App) {
                     COLOR_HIGHLIGHT
                 };
                 label_spans.push(Span::styled(
-                    format!(" ◄{}", branch),
+                    if app.ascii_only {
+                        format!(" <{}", branch)
+                    } else {
+                        format!(" ◄{}", branch)
+                    },
                     Style::default().fg(branch_color).add_modifier(Modifier::BOLD),
                 ));
                 if bi < node.branch_labels.len() - 1 {
@@ -502,9 +514,12 @@ fn render_input(f: &mut Frame, area: Rect, app: &App) {
         buffer.as_str()
     };
 
-    // In search mode, render spaces as middle dots so users can spot accidental extra spaces
+    // In search mode, render spaces as visible dots so users can spot
+    // accidental extra spaces. Uses middle-dot (·) in UTF-8 mode or
+    // plain dot (.) in ASCII mode.
     let display_buf: String = if app.input_mode == InputMode::Search {
-        visible_buf.chars().map(|c| if c == ' ' { '·' } else { c }).collect()
+        let space_glyph = if app.ascii_only { '.' } else { '·' };
+        visible_buf.chars().map(|c| if c == ' ' { space_glyph } else { c }).collect()
     } else {
         visible_buf.to_string()
     };
@@ -533,11 +548,17 @@ fn render_help_overlay(f: &mut Frame, area: Rect, _app: &App) {
         Line::from(""),
         Line::from(vec![Span::styled("  Views       ", Style::default().fg(COLOR_ACCENT))]),
         Line::from(vec![Span::styled("  l            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Log view")]),
+        Line::from(vec![Span::styled("  H            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Return to HEAD from view")]),
         Line::from(vec![Span::styled("  h            ", Style::default().fg(COLOR_ACCENT)), Span::raw("History tree")]),
         Line::from(vec![Span::styled("  r            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Repo list")]),
         Line::from(vec![Span::styled("  s            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Stats")]),
         Line::from(vec![Span::styled("  i            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Import file (browser)")]),
         Line::from(vec![Span::styled("  e            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Export current state")]),
+        Line::from(""),
+        Line::from(vec![Span::styled("  Edit        ", Style::default().fg(COLOR_ACCENT))]),
+        Line::from(vec![Span::styled("  a            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Append file to repo")]),
+        Line::from(vec![Span::styled("  I            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Insert line after cursor")]),
+        Line::from(vec![Span::styled("  M            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Modify current line")]),
         Line::from(""),
         Line::from(vec![Span::styled("  Other       ", Style::default().fg(COLOR_ACCENT))]),
         Line::from(vec![Span::styled("  ?            ", Style::default().fg(COLOR_ACCENT)), Span::raw("This help")]),
@@ -549,7 +570,16 @@ fn render_help_overlay(f: &mut Frame, area: Rect, _app: &App) {
         Line::from(vec![Span::styled("  :r /pat/repl/", Style::default().fg(COLOR_ACCENT)), Span::raw("Replace")]),
         Line::from(vec![Span::styled("  :w <path>    ", Style::default().fg(COLOR_ACCENT)), Span::raw("Export to file")]),
         Line::from(vec![Span::styled("  :d <idx>...  ", Style::default().fg(COLOR_ACCENT)), Span::raw("Delete lines")]),
+        Line::from(vec![Span::styled("  :i <N> <txt> ", Style::default().fg(COLOR_ACCENT)), Span::raw("Insert line after N")]),
+        Line::from(vec![Span::styled("  :m <N> <txt> ", Style::default().fg(COLOR_ACCENT)), Span::raw("Modify line N")]),
+        Line::from(vec![Span::styled("  :append <p>  ", Style::default().fg(COLOR_ACCENT)), Span::raw("Append file")]),
         Line::from(vec![Span::styled("  :repo <name> ", Style::default().fg(COLOR_ACCENT)), Span::raw("Switch repo")]),
+        Line::from(vec![Span::styled("  :branch <n>  ", Style::default().fg(COLOR_ACCENT)), Span::raw("Create branch")]),
+        Line::from(vec![Span::styled("  :checkout <b>", Style::default().fg(COLOR_ACCENT)), Span::raw("Switch branch")]),
+        Line::from(vec![Span::styled("  :branch del  ", Style::default().fg(COLOR_ACCENT)), Span::raw("Delete branch")]),
+        Line::from(vec![Span::styled("  :merge a b->t", Style::default().fg(COLOR_ACCENT)), Span::raw("Merge repos")]),
+        Line::from(vec![Span::styled("  :branches    ", Style::default().fg(COLOR_ACCENT)), Span::raw("List branches")]),
+        Line::from(vec![Span::styled("  :filters     ", Style::default().fg(COLOR_ACCENT)), Span::raw("List saved filters")]),
     ];
 
     let overlay_w = 60.min(area.width);

@@ -67,6 +67,20 @@ la -w .logrepo -r myrepo    # Specify workspace and repo
 
 Provides a visual interface with operation history tree, file browser, action bar, and tmux support.
 
+#### Terminal Compatibility
+
+The TUI works in most modern terminals. Known-compatible terminals:
+
+- **Linux**: xterm, gnome-terminal, konsole, alacritty, kitty, st, tmux, screen
+- **macOS**: Terminal.app, iTerm2, alacritty, kitty
+- **Windows**: Windows Terminal, alacritty, wezterm
+
+**Requirements**: The terminal must support ANSI escape sequences (alternate screen, raw mode). Most terminal emulators do. Environments where it will NOT work: `TERM=dumb`, CI runners, bare `sh` without a pty.
+
+**ASCII fallback**: If your locale does not report UTF-8 (e.g., `LANG=C`), the TUI automatically switches to ASCII-safe characters: `|`/`` ` ``/`-` for tree connectors, `*`/`o` for bullets, `[D]`/`[F]` for file icons.
+
+**Crash safety**: A panic hook ensures the terminal is always restored (exit alternate screen, re-enable cursor) even if the app crashes.
+
 ### 3. Python Library
 
 Import and use log-analyzer programmatically in scripts or notebooks:
@@ -451,6 +465,22 @@ For multi-platform distribution, use CI (e.g. GitHub Actions) to build wheels fo
 | Windows x86_64 | `x86_64-pc-windows-msvc` |
 
 Each wheel embeds the compiled Rust extension — end users only need `pip install` with no Rust toolchain.
+
+### TUI Binary Downloads
+
+Pre-built `la` binaries are available from [GitHub Releases](https://github.com/log-analyzer/log-analyzer/releases). Choose based on your platform:
+
+| Download | Type | Best for |
+|----------|------|----------|
+| `la-x86_64-unknown-linux-musl` | Static (musl) | **Any Linux distro** — truly portable, no glibc dependency |
+| `la-aarch64-unknown-linux-musl` | Static (musl) | ARM Linux (Raspberry Pi, AWS Graviton) |
+| `la-x86_64-unknown-linux-gnu` | Dynamic (glibc ≥ 2.35) | Ubuntu 22.04+, Fedora 36+, Debian 13+ |
+| `la-x86_64-unknown-linux-gnu-legacy` | Dynamic (glibc ≥ 2.28) | RHEL 8+, CentOS 8+, Debian 10+, Ubuntu 20.04+ |
+| `la-x86_64-apple-darwin` | macOS Intel | Mac with Intel CPU |
+| `la-aarch64-apple-darwin` | macOS ARM | Mac with Apple Silicon |
+| `la-x86_64-pc-windows-msvc` | Windows | Windows 10/11 |
+
+**Recommendation**: On Linux, prefer the **musl** build — it runs on any Linux distribution regardless of installed glibc version. If musl is unavailable for your architecture, choose the GNU build that matches your distribution's glibc.
 
 ## License
 

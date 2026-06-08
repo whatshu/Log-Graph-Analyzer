@@ -151,6 +151,50 @@ pub fn normal_mode(app: &mut App, key: KeyEvent) {
         // File browser for import
         KeyCode::Char('i') => app.open_file_browser(),
 
+        // a: append file to repo
+        KeyCode::Char('a') => {
+            if app.repo.borrow().is_none() {
+                app.error_message = Some("No repo open".to_string());
+            } else {
+                app.input_mode = InputMode::Input;
+                app.input_buffer.clear();
+                app.input_prompt = String::from("Append file path: ");
+            }
+        }
+
+        // I: insert line(s) after cursor
+        KeyCode::Char('I') => {
+            if app.repo.borrow().is_none() {
+                app.error_message = Some("No repo open".to_string());
+            } else {
+                app.input_mode = InputMode::Input;
+                app.input_buffer.clear();
+                app.input_prompt = format!(
+                    "Insert after line {}: ",
+                    app.cursor_line + 1
+                );
+            }
+        }
+
+        // M: modify current line
+        KeyCode::Char('M') => {
+            if app.repo.borrow().is_none() {
+                app.error_message = Some("No repo open".to_string());
+            } else if app.viewport_lines.is_empty() {
+                app.error_message = Some("No line to modify".to_string());
+            } else {
+                let line_idx = app.cursor_line;
+                let current = app.repo.borrow().as_ref().and_then(|r| {
+                    let lines = app.viewport_lines.clone();
+                    let viewport_offset = line_idx.saturating_sub(app.scroll_offset);
+                    lines.get(viewport_offset).cloned()
+                }).unwrap_or_default();
+                app.input_mode = InputMode::Input;
+                app.input_buffer = current;
+                app.input_prompt = format!("Modify line {}: ", line_idx + 1);
+            }
+        }
+
         // Export
         KeyCode::Char('e') => {
             if app.active_view == ViewKind::History {
@@ -374,7 +418,107 @@ fn execute_command(app: &mut App, cmd: &str) {
     } else if let Some(name) = cmd.strip_prefix("repo ") {
         let name = name.trim();
         app.open_repo(Some(name));
-    } else if let Some(name) = cmd.strip_prefix("branch ") {
+    } else if let Some(path) = cmd.strip_prefix("append ") {
+        let path = path.trim();
+        let append_result = {
+            let mut repo_mut = app.repo.borrow_mut();
+            if let Some(ref mut r) = *repo_mut {
+                r.append_file(Path::new(path)).map(|n| n)
+            } else {
+                Err(log_analyzer_core::error::LogAnalyzerError::Repo(
+                    "No repo open".to_string(),
+                ))
+            }
+        };
+        match append_result {
+            Ok(added) => {
+                app.status_message =
+                    format!("Appended {} lines from {}", added, path);
+                app.refresh_line_count();
+                app.load_viewport();
+                app.re_search();
+            }
+            Err(e) => {
+                app.error_message = Some(format!("Append failed: {}", e));
+            }
+        }
+    } else if let Some(args) = cmd.strip_prefix("insert ") {
+        let parts: Vec<&str> = args.splitn(2, ' ').collect();
+        if parts.len() != 2 {
+            app.error_message = Some("Usage: :insert <line_number> <text>".to_string());
+        } else if let Ok(pos) = parts[0].parse::<usize>() {
+            let after_line = pos.saturating_sub(1); // 1-based to 0-based
+            app.queue_operation(Operation::InsertLines {
+                after_line,
+                content: vec![parts[1].to_string()],
+            });
+            app.status_message = format!("Insert line after {}", pos);
+        } else {
+            app.error_message = Some("Usage: :insert <line_number> <text>".to_string());
+        }
+    } else if let Some(args) = cmd.strip_prefix("modify ") {
+        let parts: Vec<&str> = args.splitn(2, ' ').collect();
+        if parts.len() != 2 {
+            app.error_message = Some("Usage: :modify <line_number> <text>".to_string());
+        } else if let Ok(idx) = parts[0].parse::<usize>() {
+            let line_index = idx.saturating_sub(1); // 1-based to 0-based
+            app.queue_operation(Operation::ModifyLine {
+                line_index,
+                new_content: parts[1].to_string(),
+            });
+            app.status_message = format!("Modified line {}", idx);
+        } else {
+            app.error_message = Some("Usage: :modify <line_number> <text>".to_string());
+        }
+    } else if let Some(args) = cmd.strip_prefix("merge ") {
+        // Format: :merge src1 src2 -> target
+        let parts: Vec<&str> = args.split("->").collect();
+        if parts.len() != 2 {
+            app.error_message =
+                Some("Usage: :merge <src1> <src2> -> <target>".to_string());
+        } else {
+            let sources: Vec<&str> = parts[0].split_whitespace().collect();
+            let target = parts[1].trim();
+            if sources.is_empty() || target.is_empty() {
+                app.error_message =
+                    Some("Usage: :merge <src1> <src2> -> <target>".to_string());
+            } else {
+                match app.workspace.merge_repos(&sources, target) {
+                    Ok(merged) => {
+                        app.status_message = format!(
+                            "Merged {} repos into '{}' ({} lines)",
+                            sources.len(),
+                            target,
+                            merged.original_line_count()
+                        );
+                    }
+                    Err(e) => {
+                        app.error_message =
+                            Some(format!("Merge failed: {}", e));
+                    }
+                }
+            }
+        }
+    } else if let Some(name) = cmd.strip_prefix("branch del ") {
+        let name = name.trim();
+        let mut repo_mut = app.repo.borrow_mut();
+        if let Some(ref mut r) = *repo_mut {
+            match r.delete_branch(name) {
+                Ok(true) => {
+                    app.status_message = format!("Deleted branch '{}'", name);
+                    drop(repo_mut);
+                    app.build_history();
+                }
+                Ok(false) => {
+                    app.error_message = Some(format!("Branch '{}' not found", name));
+                }
+                Err(e) => {
+                    app.error_message = Some(format!("Cannot delete branch: {}", e));
+                }
+            }
+        } else {
+            app.error_message = Some("No repo open".to_string());
+        }
         let name = name.trim();
         if name.is_empty() {
             app.error_message = Some("Usage: :branch <name>".to_string());
@@ -583,6 +727,58 @@ fn handle_input(app: &mut App, prompt: &str, input: &str) {
             }
             Err(e) => app.error_message = Some(format!("Import failed: {}", e)),
         }
+    } else if prompt.starts_with("Append file path") {
+        let path = Path::new(input);
+        if !path.exists() {
+            app.error_message = Some(format!("File not found: {}", input));
+            return;
+        }
+        let append_result = {
+            let mut repo_mut = app.repo.borrow_mut();
+            if let Some(ref mut r) = *repo_mut {
+                r.append_file(path).map(|n| n)
+            } else {
+                Err(log_analyzer_core::error::LogAnalyzerError::Repo(
+                    "No repo open".to_string(),
+                ))
+            }
+        };
+        match append_result {
+            Ok(added) => {
+                app.status_message =
+                    format!("Appended {} lines from {}", added, input);
+                app.refresh_line_count();
+                app.load_viewport();
+                app.re_search();
+            }
+            Err(e) => {
+                app.error_message = Some(format!("Append failed: {}", e));
+            }
+        }
+    } else if prompt.starts_with("Insert after line") {
+        let pos: usize = prompt
+            .strip_prefix("Insert after line ")
+            .and_then(|s| s.strip_suffix(": "))
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0); // 1-based
+        let after_line = pos.saturating_sub(1);
+        app.queue_operation(Operation::InsertLines {
+            after_line,
+            content: vec![input.to_string()],
+        });
+        app.status_message = format!("Inserted line after {}", pos);
+    } else if prompt.starts_with("Modify line") {
+        let line_index: usize = prompt
+            .strip_prefix("Modify line ")
+            .and_then(|s| s.strip_suffix(": "))
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(0)
+            .saturating_sub(1); // 1-based to 0-based
+        app.queue_operation(Operation::ModifyLine {
+            line_index,
+            new_content: input.to_string(),
+        });
+        app.status_message = format!("Modified line {}", line_index + 1);
     } else if prompt.contains("Export path") {
         let node_idx = app.pending_history_export.take().unwrap_or(0);
         app.queue_export_from(node_idx, input.to_string());
