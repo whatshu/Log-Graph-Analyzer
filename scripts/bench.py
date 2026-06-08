@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-bench.py — Benchmark log-analyzer against grep / ripgrep / awk on a >10 GB file.
+bench.py — Benchmark lga against grep / ripgrep / awk on a >10 GB file.
 
 Usage
 -----
@@ -202,7 +202,7 @@ def mem_total_gb() -> float:
 
 def run_benchmarks(file_path: Path, file_gb: float) -> list[dict]:
     """Run all benchmarks and return result rows."""
-    from log_analyzer._core import LogRepo
+    from lga._core import LogRepo
     import tempfile
 
     results: list[dict] = []
@@ -253,10 +253,10 @@ def run_benchmarks(file_path: Path, file_gb: float) -> list[dict]:
     print(f"  awk          : {t:.2f}s  ({awk_count:,} matches)")
     results.append(row("awk", f"count '{PATTERN}'", t))
 
-    # log-analyzer static (raw file, uses ripgrep SIMD)
+    # lga static (raw file, uses ripgrep SIMD)
     t, la_count = time_fn(lambda: LogRepo.count_file_matches(str(file_path), PATTERN))
     print(f"  la (raw)     : {t:.2f}s  ({la_count:,} matches)")
-    results.append(row("log-analyzer", f"count '{PATTERN}' (raw file)", t, "ripgrep SIMD, no import"))
+    results.append(row("lga-cli", f"count '{PATTERN}' (raw file)", t, "ripgrep SIMD, no import"))
 
     # -- 3. Import (one-time) ------------------------------------------------
     print("\n[3/5] Import & compress (one-time, not repeated)")
@@ -277,7 +277,7 @@ def run_benchmarks(file_path: Path, file_gb: float) -> list[dict]:
         f"  Ratio: {ratio:.1f}x"
     )
     results.append(row(
-        "log-analyzer", "import + compress",
+        "lga-cli", "import + compress",
         import_time,
         f"raw→compressed {ratio:.1f}x, repo {repo_size_bytes/(1<<30):.2f} GiB",
     ))
@@ -287,7 +287,7 @@ def run_benchmarks(file_path: Path, file_gb: float) -> list[dict]:
     t, la_comp_count = time_fn(lambda: repo_obj.count_matches(PATTERN))
     print(f"  la (compressed): {t:.2f}s  ({la_comp_count:,} matches)")
     results.append(row(
-        "log-analyzer", f"count '{PATTERN}' (compressed)",
+        "lga-cli", f"count '{PATTERN}' (compressed)",
         t, f"reads {repo_size_bytes/(1<<30):.2f} GiB compressed",
     ))
 
@@ -313,7 +313,7 @@ def run_benchmarks(file_path: Path, file_gb: float) -> list[dict]:
     )
     print(f"  la   → file  : {t:.2f}s  ({la_filter_n:,} lines written, reads compressed)")
     results.append(row(
-        "log-analyzer", f"filter '{PATTERN}' → file (compressed)",
+        "lga-cli", f"filter '{PATTERN}' → file (compressed)",
         t, "streaming, reads compressed chunks",
     ))
 
@@ -401,7 +401,7 @@ def render_markdown(
 
     lines += [
         "",
-        "### Import & compression (log-analyzer, one-time cost)",
+        "### Import & compression (lga, one-time cost)",
         "",
         "| Metric | Value |",
         "|--------|-------|",
@@ -427,7 +427,7 @@ def render_markdown(
         "",
         "- **grep / ripgrep / awk** operate on the raw file every time.",
         (
-            f"- **log-analyzer** pays a one-time import cost ({stats['import_time']:.1f} s) "
+            f"- **lga** pays a one-time import cost ({stats['import_time']:.1f} s) "
             f"that compresses the data {ratio:.1f}× ({raw_gb:.1f} → {repo_gb:.1f} GiB)."
         ),
         (

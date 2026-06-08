@@ -5,7 +5,7 @@ A high-performance log analysis tool with a Rust backend and Python CLI frontend
 ## Architecture
 
 - **Rust core** (`src/`): Storage engine with zstd compression, line indexing, operators (filter/replace/CRUD), multi-threaded via rayon, exposed to Python via PyO3.
-- **Python frontend** (`python/log_analyzer/`): Click-based CLI with rich output.
+- **Python frontend** (`python/lga/`): Click-based CLI with rich output.
 - **Build**: maturin (pyproject.toml + Cargo.toml).
 
 ## Key Concepts
@@ -19,7 +19,7 @@ A high-performance log analysis tool with a Rust backend and Python CLI frontend
 pip install -e ".[dev]"       # Build & install (includes maturin)
 cargo test                     # Rust tests (35 tests)
 pytest tests/                  # Python tests (41 tests)
-log-analyzer --help            # CLI usage
+lga-cli --help            # CLI usage
 ```
 
 ## Project Layout
@@ -32,7 +32,7 @@ src/                     # Rust source
 ├── repo/                # Repository: storage, metadata, chunk management
 ├── operator/            # Operators: filter, replace, CRUD
 └── index/               # Line indexing and chunk building
-python/log_analyzer/     # Python package
+python/lga/     # Python package
 ├── __init__.py          # Re-exports from _core
 └── cli.py               # Click CLI commands
 tests/                   # Rust integration + Python tests

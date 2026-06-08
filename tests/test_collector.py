@@ -5,7 +5,7 @@ import tempfile
 
 import pytest
 
-from log_analyzer import LogRepo
+from lga import LogRepo
 
 
 @pytest.fixture

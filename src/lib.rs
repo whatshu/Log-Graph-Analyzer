@@ -6,6 +6,7 @@ pub mod history;
 pub mod index;
 pub mod operator;
 pub mod repo;
+pub mod tag;
 
 #[cfg(feature = "python-bindings")]
 mod bindings;

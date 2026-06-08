@@ -1,4 +1,4 @@
-# log-analyzer
+# lga
 
 [中文文档](README_zh.md)
 
@@ -40,22 +40,22 @@ maturin build --release       # Build .whl to target/wheels/
 
 ## Invocation Methods
 
-log-analyzer can be used in four different ways:
+lga-cli can be used in four different ways:
 
-### 1. Python CLI (`log-analyzer`)
+### 1. Python CLI (`lga-cli`)
 
 The primary interface. Installed as a console script via pip:
 
 ```bash
 pip install -e ".[dev]"
-log-analyzer --help
+lga-cli --help
 ```
 
 All log operations (import, filter, replace, search, undo, export, etc.) and repository management commands (`repo list`, `clone`, `remove`, etc.) are available through the CLI. See [Quick Start](#quick-start) and [CLI Reference](#cli-reference) below.
 
-### 2. Rust Native TUI (`la`)
+### 2. Rust Native TUI (`lga`)
 
-An interactive terminal UI built with ratatui + crossterm. Launched via the `la` binary:
+An interactive terminal UI built with ratatui + crossterm. Launched via the `lga` binary:
 
 ```bash
 cargo run --                                          # Development
@@ -86,7 +86,7 @@ The TUI works in most modern terminals. Known-compatible terminals:
 Import and use log-analyzer programmatically in scripts or notebooks:
 
 ```python
-from log_analyzer import Workspace, LogRepo
+from lga import Workspace, LogRepo
 
 ws = Workspace(".logrepo")
 repo = ws.import_file("server.log", "my_repo")
@@ -102,12 +102,12 @@ Use the core engine as a Rust library in other projects:
 
 ```toml
 [dependencies]
-log_analyzer_core = { path = "/path/to/log-analyzer", default-features = false }
+lga_core = { path = "/path/to/log-analyzer", default-features = false }
 ```
 
 ```rust
-use log_analyzer_core::repo;
-use log_analyzer_core::engine;
+use lga_core::repo;
+use lga_core::engine;
 ```
 
 Disabling default features skips Python bindings, giving you a pure Rust library.
@@ -116,31 +116,31 @@ Disabling default features skips Python bindings, giving you a pure Rust library
 
 ```bash
 # Import a log file (creates "default" repo)
-log-analyzer import server.log
+lga-cli import server.log
 
 # View the first 20 lines
-log-analyzer view
+lga-cli view
 
 # Filter to keep only ERROR lines
-log-analyzer filter "ERROR" --keep
+lga-cli filter "ERROR" --keep
 
 # Undo the filter
-log-analyzer undo
+lga-cli undo
 
 # Clone for a separate analysis branch
-log-analyzer repo clone default errors
-log-analyzer repo use errors
-log-analyzer filter "ERROR" --keep
+lga-cli repo clone default errors
+lga-cli repo use errors
+lga-cli filter "ERROR" --keep
 
 # Switch back — original is untouched
-log-analyzer repo use default
-log-analyzer view
+lga-cli repo use default
+lga-cli view
 
 # List all repos
-log-analyzer repo list
+lga-cli repo list
 
 # Export
-log-analyzer export filtered.log
+lga-cli export filtered.log
 ```
 
 ## CLI Reference
@@ -178,7 +178,7 @@ The workspace directory defaults to `.logrepo/` and can be changed with `--works
 ## Python API
 
 ```python
-from log_analyzer import Workspace
+from lga import Workspace
 
 # Open workspace (auto-creates on first import)
 ws = Workspace(".logrepo")
@@ -193,7 +193,7 @@ repo = ws.open_active()          # or ws.open_repo("errors")
 print(ws.list())                  # ["default", "errors"]
 
 # Low-level: open a repo directly by path
-from log_analyzer import LogRepo
+from lga import LogRepo
 repo = LogRepo.open("./some/path")
 
 # Read lines
@@ -241,7 +241,7 @@ cloned = repo.clone_to("./repo_copy")
 ### Analyzing a large JSON log
 
 ```python
-from log_analyzer import LogRepo
+from lga import LogRepo
 
 repo = LogRepo.import_file(".logrepo", "access.log")
 
@@ -267,41 +267,41 @@ print(f"latency: min={stats['min']:.0f} max={stats['max']:.0f} avg={stats['avg']
 ### Concatenating split log files
 
 ```bash
-log-analyzer import logs/part1.log
-log-analyzer append logs/part2.log
-log-analyzer append logs/part3.log
-log-analyzer info   # shows total lines across all parts
+lga-cli import logs/part1.log
+lga-cli append logs/part2.log
+lga-cli append logs/part3.log
+lga-cli info   # shows total lines across all parts
 ```
 
 ### Branching analysis
 
 ```bash
 # Import base data
-log-analyzer import access.log
+lga-cli import access.log
 
 # Clone for two independent analyses
-log-analyzer repo clone default error_analysis
-log-analyzer repo clone default perf_analysis
+lga-cli repo clone default error_analysis
+lga-cli repo clone default perf_analysis
 
 # Analyze errors
-log-analyzer repo use error_analysis
-log-analyzer filter '" 500 ' --keep
-log-analyzer export 500_errors.log
+lga-cli repo use error_analysis
+lga-cli filter '" 500 ' --keep
+lga-cli export 500_errors.log
 
 # Analyze performance (target by name without switching)
-log-analyzer filter 'slow\|timeout' --keep --repo perf_analysis
+lga-cli filter 'slow\|timeout' --keep --repo perf_analysis
 
 # Original data untouched
-log-analyzer view --repo default
+lga-cli view --repo default
 ```
 
 ### Anonymizing sensitive data
 
 ```bash
-log-analyzer import access.log
-log-analyzer replace '\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}' 'X.X.X.X'
-log-analyzer replace 'user=\w+' 'user=REDACTED'
-log-analyzer export anonymized.log
+lga-cli import access.log
+lga-cli replace '\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}' 'X.X.X.X'
+lga-cli replace 'user=\w+' 'user=REDACTED'
+lga-cli export anonymized.log
 ```
 
 ## Benchmarks
@@ -312,7 +312,7 @@ Run the benchmark yourself: `python3 benchmarks/bench.py [LOG_FILE]`
 
 ### Performance comparison
 
-| Task | grep | ripgrep | sed | awk | Python | log-analyzer |
+| Task | grep | ripgrep | sed | awk | Python | lga-cli |
 |------|------|---------|-----|-----|--------|--------------|
 | Count matches | 200 ms | 113 ms | — | 700 ms | 331 ms | **119 ms** |
 | Filter to file | 281 ms | **179 ms** | — | 751 ms | 400 ms | 335 ms |
@@ -323,14 +323,14 @@ Run the benchmark yourself: `python3 benchmarks/bench.py [LOG_FILE]`
 
 **Key takeaways:**
 
-- **Counting**: log-analyzer matches ripgrep speed (119 ms vs 113 ms) — uses ripgrep's grep-searcher + zero-copy chunk iteration. Faster than grep, awk, and Python.
+- **Counting**: lga-cli matches ripgrep speed (119 ms vs 113 ms) — uses ripgrep's grep-searcher + zero-copy chunk iteration. Faster than grep, awk, and Python.
 - **Regex replace**: Fastest overall, on par with sed; 10x faster than Python.
-- **Aggregation (group-by, top-N, stats)**: **log-analyzer is fastest** — 4x faster than Python, 5.5x faster than rg|sort|uniq pipe.
+- **Aggregation (group-by, top-N, stats)**: **lga-cli is fastest** — 4x faster than Python, 5.5x faster than rg|sort|uniq pipe.
 - **Filter to file**: 1.9x ripgrep — close after zero-copy optimization (previously 3x).
 
 ### Usability comparison
 
-| Feature | grep/rg/sed/awk | log-analyzer |
+| Feature | grep/rg/sed/awk | lga-cli |
 |---------|-----------------|--------------|
 | Count matches | `grep -c` / `rg -c` | `collect_count(pattern)` |
 | Filter to file | `grep pattern > out` | `stream_filter_to_file()` |
@@ -349,7 +349,7 @@ Run the benchmark yourself: `python3 benchmarks/bench.py [LOG_FILE]`
 ## Project Structure
 
 ```
-log-analyzer/
+lga/
 ├── build.sh                Build/install/uninstall script
 ├── Cargo.toml              Rust package config
 ├── pyproject.toml          Python package config (maturin)
@@ -468,17 +468,17 @@ Each wheel embeds the compiled Rust extension — end users only need `pip insta
 
 ### TUI Binary Downloads
 
-Pre-built `la` binaries are available from [GitHub Releases](https://github.com/log-analyzer/log-analyzer/releases). Choose based on your platform:
+Pre-built `lga` binaries are available from [GitHub Releases](https://github.com/lga/lga/releases). Choose based on your platform:
 
 | Download | Type | Best for |
 |----------|------|----------|
-| `la-x86_64-unknown-linux-musl` | Static (musl) | **Any Linux distro** — truly portable, no glibc dependency |
-| `la-aarch64-unknown-linux-musl` | Static (musl) | ARM Linux (Raspberry Pi, AWS Graviton) |
-| `la-x86_64-unknown-linux-gnu` | Dynamic (glibc ≥ 2.35) | Ubuntu 22.04+, Fedora 36+, Debian 13+ |
-| `la-x86_64-unknown-linux-gnu-legacy` | Dynamic (glibc ≥ 2.28) | RHEL 8+, CentOS 8+, Debian 10+, Ubuntu 20.04+ |
-| `la-x86_64-apple-darwin` | macOS Intel | Mac with Intel CPU |
-| `la-aarch64-apple-darwin` | macOS ARM | Mac with Apple Silicon |
-| `la-x86_64-pc-windows-msvc` | Windows | Windows 10/11 |
+| `lga-x86_64-unknown-linux-musl` | Static (musl) | **Any Linux distro** — truly portable, no glibc dependency |
+| `lga-aarch64-unknown-linux-musl` | Static (musl) | ARM Linux (Raspberry Pi, AWS Graviton) |
+| `lga-x86_64-unknown-linux-gnu` | Dynamic (glibc ≥ 2.35) | Ubuntu 22.04+, Fedora 36+, Debian 13+ |
+| `lga-x86_64-unknown-linux-gnu-legacy` | Dynamic (glibc ≥ 2.28) | RHEL 8+, CentOS 8+, Debian 10+, Ubuntu 20.04+ |
+| `lga-x86_64-apple-darwin` | macOS Intel | Mac with Intel CPU |
+| `lga-aarch64-apple-darwin` | macOS ARM | Mac with Apple Silicon |
+| `lga-x86_64-pc-windows-msvc` | Windows | Windows 10/11 |
 
 **Recommendation**: On Linux, prefer the **musl** build — it runs on any Linux distribution regardless of installed glibc version. If musl is unavailable for your architecture, choose the GNU build that matches your distribution's glibc.
 

@@ -5,15 +5,15 @@
 #   ./build.sh pkg          # build deb + rpm for current platform
 #   ./build.sh ci           # build wheels + deb + rpm
 
-name: log-analyzer
+name: lga
 arch: __ARCH__
 version: __VERSION__
-maintainer: log-analyzer contributors
+maintainer: lga contributors
 description: |
   High-performance log analysis tool for large text files (>10GB).
   Rust backend with zstd compression, ripgrep-powered search,
   reversible operations, and Python CLI.
-vendor: log-analyzer
+vendor: lga
 homepage: https://github.com/log-analyzer/log-analyzer
 license: MIT
 
@@ -22,17 +22,17 @@ depends:
 
 contents:
   # The self-contained virtualenv
-  - src: __STAGING__/opt/log-analyzer/
-    dst: /opt/log-analyzer/
+  - src: __STAGING__/opt/lga/
+    dst: /opt/lga/
     type: tree
 
   # CLI entry point wrapper
-  - src: __STAGING__/usr/bin/log-analyzer
-    dst: /usr/bin/log-analyzer
+  - src: __STAGING__/usr/bin/lga-cli
+    dst: /usr/bin/lga-cli
 
   # TUI binary
-  - src: __STAGING__/usr/bin/la
-    dst: /usr/bin/la
+  - src: __STAGING__/usr/bin/lga
+    dst: /usr/bin/lga
 
 scripts:
   postinstall: "__STAGING__/postinstall.sh"

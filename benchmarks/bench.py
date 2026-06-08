@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Performance benchmark: log-analyzer vs common text processing tools.
+Performance benchmark: lga vs common text processing tools.
 
 Compares against grep, ripgrep (rg), awk, and Python stdlib on realistic
 tasks using the same log file. Measures wall-clock time for each.
@@ -87,9 +87,9 @@ print(f"Log file:  {LOG_FILE} ({FILE_SIZE_MB:.0f} MB)")
 print(f"Repo path: {REPO_PATH}")
 print()
 
-print("Importing into log-analyzer repo (one-time cost)...")
+print("Importing into lga repo (one-time cost)...")
 t0 = time.perf_counter()
-from log_analyzer import LogRepo
+from lga import LogRepo
 repo = LogRepo.import_file(REPO_PATH, LOG_FILE)
 import_time = time.perf_counter() - t0
 meta = repo.metadata()
@@ -144,13 +144,13 @@ print(f"  python:           {fmt(t)}  result={out}")
 
 # log-analyzer (collector on repo, already imported)
 t, out = run_python(lambda: repo.collect_count(PATTERN))
-results.append(Result("log-analyzer", TASK, t, out))
-print(f"  log-analyzer:     {fmt(t)}  result={out}")
+results.append(Result("lga-cli", TASK, t, out))
+print(f"  lga-cli:     {fmt(t)}  result={out}")
 
 # log-analyzer stream count
 t, out = run_python(lambda: repo.count_matches(PATTERN))
-results.append(Result("log-analyzer(stream)", TASK, t, out))
-print(f"  log-analyzer(st): {fmt(t)}  result={out}")
+results.append(Result("lga-cli(stream)", TASK, t, out))
+print(f"  lga-cli(st): {fmt(t)}  result={out}")
 
 separator()
 
@@ -194,8 +194,8 @@ with tempfile.TemporaryDirectory() as tmpdir:
     print(f"  python:           {fmt(t)}")
 
     t, out = run_python(lambda: repo.stream_filter_to_file(PATTERN, True, out_la))
-    results.append(Result("log-analyzer", TASK2, t, out))
-    print(f"  log-analyzer:     {fmt(t)}  lines={out}")
+    results.append(Result("lga-cli", TASK2, t, out))
+    print(f"  lga-cli:     {fmt(t)}  lines={out}")
 
 separator()
 
@@ -242,8 +242,8 @@ with tempfile.TemporaryDirectory() as tmpdir:
     t, out = run_python(
         lambda: repo.stream_replace_to_file(REPLACE_PAT, REPLACE_REP, out_la)
     )
-    results.append(Result("log-analyzer", TASK3, t, out))
-    print(f"  log-analyzer:     {fmt(t)}  modified={out}")
+    results.append(Result("lga-cli", TASK3, t, out))
+    print(f"  lga-cli:     {fmt(t)}  modified={out}")
 
 separator()
 
@@ -295,8 +295,8 @@ results.append(Result("python", TASK4, t))
 print(f"  python Counter:   {fmt(t)}")
 
 t, out = run_python(lambda: repo.collect_group_count(GROUP_PAT, 1))
-results.append(Result("log-analyzer", TASK4, t))
-print(f"  log-analyzer:     {fmt(t)}")
+results.append(Result("lga-cli", TASK4, t))
+print(f"  lga-cli:     {fmt(t)}")
 
 separator()
 
@@ -311,7 +311,7 @@ print()
 
 tasks = sorted(set(r.task for r in results), key=lambda t: [r.task for r in results].index(t))
 tools_order = ["grep", "grep|wc", "ripgrep", "awk", "sed", "rg|sort|uniq", "python",
-               "log-analyzer", "log-analyzer(stream)"]
+               "lga-cli", "lga-cli(stream)"]
 
 for task in tasks:
     print(f"  {task}")
@@ -330,7 +330,7 @@ for task in tasks:
 
 print("========== USABILITY COMPARISON ==========\n")
 print("""\
-| Feature                  | grep/rg/sed/awk        | log-analyzer            |
+| Feature                  | grep/rg/sed/awk        | lga-cli            |
 |--------------------------|------------------------|-------------------------|
 | Count matches            | grep -c / rg -c        | collect_count(pattern)  |
 | Filter to file           | grep pattern > out      | stream_filter_to_file() |

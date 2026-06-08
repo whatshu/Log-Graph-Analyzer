@@ -1,5 +1,5 @@
 ---
-description: Develop and extend the log-analyzer project. Build, test, add operators, modify the Rust core or Python CLI. Covers the full dev workflow.
+description: Develop and extend the lga project. Build, test, add operators, modify the Rust core or Python CLI. Covers the full dev workflow.
 ---
 
 # Develop Log Analyzer
@@ -26,7 +26,7 @@ cargo test && pytest tests/ -v
 2. Add variant to `Operation` enum in `src/operator/mod.rs`.
 3. Wire up `apply()` and `apply_with_inverse()` match arms.
 4. Add PyO3 binding method in `src/bindings.rs`.
-5. Add CLI command in `python/log_analyzer/cli.py`.
+5. Add CLI command in `python/lga/cli.py`.
 6. Add tests in both `tests/test_repo.rs` and `tests/test_python_repo.py`.
 
 ## Key Design Principles
@@ -52,4 +52,4 @@ cargo test && pytest tests/ -v
 | `src/operator/filter.rs` | Regex filter (keep/remove) |
 | `src/operator/replace.rs` | Regex replace with capture groups |
 | `src/operator/crud.rs` | DeleteLines, InsertLines, ModifyLine |
-| `python/log_analyzer/cli.py` | Click CLI commands |
+| `python/lga/cli.py` | Click CLI commands |

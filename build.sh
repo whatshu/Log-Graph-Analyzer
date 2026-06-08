@@ -182,7 +182,7 @@ do_install() {
     if [[ "$MODE" == "dev" ]]; then
         info "Installing in editable/development mode..."
         pip install -e ".[dev]"
-        ok "Installed (editable).  CLI: log-analyzer --help"
+        ok "Installed (editable).  CLI: lga-cli --help"
     else
         do_build
         info "Installing $WHEEL ..."
@@ -265,7 +265,7 @@ do_pkg() {
     # Step 2: create a staging directory with a self-contained venv
     local staging
     staging=$(mktemp -d)
-    local venv_dir="$staging/opt/log-analyzer"
+    local venv_dir="$staging/opt/lga"
 
     info "Creating self-contained virtualenv..."
     python3 -m venv "$venv_dir"
@@ -274,19 +274,19 @@ do_pkg() {
 
     # Step 3: create CLI wrapper that uses the bundled venv
     mkdir -p "$staging/usr/bin"
-    cat > "$staging/usr/bin/log-analyzer" <<'WRAPPER'
+    cat > "$staging/usr/bin/lga-cli" <<'WRAPPER'
 #!/bin/sh
-exec /opt/log-analyzer/bin/python -m log_analyzer.cli "$@"
+exec /opt/lga/bin/python -m lga.cli "$@"
 WRAPPER
-    chmod +x "$staging/usr/bin/log-analyzer"
+    chmod +x "$staging/usr/bin/lga-cli"
 
     # Step 3b: include TUI binary if it was built
-    local la_bin="$ROOT_DIR/target/release/la"
-    if [[ -x "$la_bin" ]]; then
-        info "Including TUI binary (la) in package..."
-        cp "$la_bin" "$staging/usr/bin/la"
+    local lga_bin="$ROOT_DIR/target/release/lga"
+    if [[ -x "$lga_bin" ]]; then
+        info "Including TUI binary (lga) in package..."
+        cp "$lga_bin" "$staging/usr/bin/lga"
     else
-        info "TUI binary not found (build with: cargo build --bin la --no-default-features --release) — skipping."
+        info "TUI binary not found (build with: cargo build --bin lga --no-default-features --release) — skipping."
     fi
 
     # Step 3c: create postinstall script for system-level config preset
@@ -454,7 +454,7 @@ do_ci() {
 
     # ---- Build native TUI binary ----
     info "Building native TUI binary..."
-    cargo build --bin la --no-default-features --release
+    cargo build --bin lga --no-default-features --release
     ok "TUI binary built"
 
     # ---- Detect platform ----
@@ -468,7 +468,7 @@ do_ci() {
     mkdir -p "${BUILD_DIR}/tui" "${BUILD_DIR}/lib" "${BUILD_DIR}/pkg"
 
     # TUI binary — add platform suffix to avoid cross-platform name collisions
-    cp target/release/la "${BUILD_DIR}/tui/la-${PLATFORM}" 2>/dev/null || true
+    cp target/release/lga "${BUILD_DIR}/tui/lga-${PLATFORM}" 2>/dev/null || true
 
     # lib artifacts (wheels) — platform is already encoded in wheel filenames
     shopt -s nullglob
@@ -504,7 +504,7 @@ case "${COMMAND:-}" in
         ;;
     uninstall)
         info "Uninstalling log-analyzer..."
-        pip uninstall -y log-analyzer 2>/dev/null && ok "Uninstalled." || ok "Not installed."
+        pip uninstall -y lga 2>/dev/null && ok "Uninstalled." || ok "Not installed."
         ;;
     test)
         do_install

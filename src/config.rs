@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cache::CacheConfig;
 
-/// User configuration for log-analyzer.
+/// User configuration for lga.
 ///
 /// Loaded from three tiers (each overrides the previous):
 /// 1. System:  `/etc/log-analyzer/config.toml`

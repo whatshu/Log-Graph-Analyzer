@@ -39,6 +39,22 @@ pub enum Operation {
         line_index: usize,
         new_content: String,
     },
+    /// Merge: UNION of line sets from multiple source nodes.
+    /// Handled at LogRepo level — see `LogRepo::merge_nodes()`.
+    Merge {
+        sources: Vec<usize>,
+    },
+    /// Subtract: lines in `base` node minus lines in `subtrahend` node.
+    /// Handled at LogRepo level — see `LogRepo::subtract_nodes()`.
+    Subtract {
+        base: usize,
+        subtrahend: usize,
+    },
+    /// Replay: re-apply a source node's operation at a different tree position.
+    /// Handled at LogRepo level — see `LogRepo::replay_node_at()`.
+    Replay {
+        source_node_id: usize,
+    },
 }
 
 /// Stored inverse data for undoing an operation.
@@ -65,6 +81,18 @@ pub enum InverseData {
     ModifyInverse {
         line_index: usize,
         original_content: String,
+    },
+    /// For merge: the line sets from each source node (for undo reconstruction).
+    MergeInverse {
+        source_line_sets: Vec<Vec<String>>,
+    },
+    /// For subtract: the lines removed from the base set.
+    SubtractInverse {
+        removed: Vec<(usize, String)>,
+    },
+    /// For replay: the inverse data from the replayed operation.
+    ReplayInverse {
+        inner: Box<InverseData>,
     },
 }
 
@@ -95,6 +123,11 @@ impl Operation {
                 line_index,
                 new_content,
             } => ModifyLine::apply(lines, *line_index, new_content),
+            Operation::Merge { .. } | Operation::Subtract { .. } | Operation::Replay { .. } => {
+                Err(crate::error::LogAnalyzerError::Operator(
+                    "Merge/Subtract/Replay must be applied via LogRepo methods".into(),
+                ))
+            }
         }
     }
 
@@ -119,6 +152,11 @@ impl Operation {
                 line_index,
                 new_content,
             } => ModifyLine::apply_with_inverse(lines, *line_index, new_content),
+            Operation::Merge { .. } | Operation::Subtract { .. } | Operation::Replay { .. } => {
+                Err(crate::error::LogAnalyzerError::Operator(
+                    "Merge/Subtract/Replay must be applied via LogRepo methods".into(),
+                ))
+            }
         }
     }
 
@@ -156,6 +194,16 @@ impl Operation {
                 new_content: _,
             } => {
                 format!("modify line {}", line_index)
+            }
+            Operation::Merge { sources } => {
+                let ids: Vec<String> = sources.iter().map(|s| s.to_string()).collect();
+                format!("merge nodes [{}]", ids.join(", "))
+            }
+            Operation::Subtract { base, subtrahend } => {
+                format!("subtract node {} from node {}", subtrahend, base)
+            }
+            Operation::Replay { source_node_id } => {
+                format!("replay node {}", source_node_id)
             }
         }
     }

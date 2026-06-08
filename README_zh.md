@@ -1,4 +1,4 @@
-# log-analyzer
+# lga
 
 [English](README.md)
 
@@ -40,22 +40,22 @@ maturin build --release       # 构建 .whl 到 target/wheels/
 
 ## 调用方式
 
-log-analyzer 支持四种不同的使用方式：
+lga-cli 支持四种不同的使用方式：
 
-### 1. Python CLI 命令行 (`log-analyzer`)
+### 1. Python CLI 命令行 (`lga-cli`)
 
 主要使用方式。通过 pip 安装为 console script：
 
 ```bash
 pip install -e ".[dev]"
-log-analyzer --help
+lga-cli --help
 ```
 
 所有日志操作（import、filter、replace、search、undo、export 等）和仓库管理命令（`repo list`、`clone`、`remove` 等）均可通过 CLI 使用。详见下方[快速开始](#快速开始)和 [CLI 命令参考](#cli-命令参考)。
 
-### 2. Rust 原生 TUI (`la`)
+### 2. Rust 原生 TUI (`lga`)
 
-基于 ratatui + crossterm 的交互式终端界面。通过 `la` 二进制启动：
+基于 ratatui + crossterm 的交互式终端界面。通过 `lga` 二进制启动：
 
 ```bash
 cargo run --                                          # 开发模式
@@ -86,7 +86,7 @@ TUI 可在大多数现代终端中使用。已知兼容的终端：
 在脚本或 notebook 中以编程方式导入使用：
 
 ```python
-from log_analyzer import Workspace, LogRepo
+from lga import Workspace, LogRepo
 
 ws = Workspace(".logrepo")
 repo = ws.import_file("server.log", "my_repo")
@@ -102,12 +102,12 @@ repo.export("output.log")
 
 ```toml
 [dependencies]
-log_analyzer_core = { path = "/path/to/log-analyzer", default-features = false }
+lga_core = { path = "/path/to/log-analyzer", default-features = false }
 ```
 
 ```rust
-use log_analyzer_core::repo;
-use log_analyzer_core::engine;
+use lga_core::repo;
+use lga_core::engine;
 ```
 
 关闭默认 features 可跳过 Python 绑定，获得纯 Rust 库。
@@ -116,31 +116,31 @@ use log_analyzer_core::engine;
 
 ```bash
 # 导入日志文件（创建 "default" 仓库）
-log-analyzer import server.log
+lga-cli import server.log
 
 # 查看前 20 行
-log-analyzer view
+lga-cli view
 
 # 过滤保留 ERROR 行
-log-analyzer filter "ERROR" --keep
+lga-cli filter "ERROR" --keep
 
 # 撤销过滤
-log-analyzer undo
+lga-cli undo
 
 # 克隆出独立分析分支
-log-analyzer repo clone default errors
-log-analyzer repo use errors
-log-analyzer filter "ERROR" --keep
+lga-cli repo clone default errors
+lga-cli repo use errors
+lga-cli filter "ERROR" --keep
 
 # 切回原始——数据不受影响
-log-analyzer repo use default
-log-analyzer view
+lga-cli repo use default
+lga-cli view
 
 # 列出所有 repo
-log-analyzer repo list
+lga-cli repo list
 
 # 导出
-log-analyzer export filtered.log
+lga-cli export filtered.log
 ```
 
 ## CLI 命令参考
@@ -178,7 +178,7 @@ log-analyzer export filtered.log
 ## Python API
 
 ```python
-from log_analyzer import LogRepo
+from lga import LogRepo
 
 # 导入
 repo = LogRepo.import_file("./repo", "server.log")
@@ -227,7 +227,7 @@ cloned = repo.clone_to("./repo_copy")
 ### 分析 900 MB JSON 日志
 
 ```python
-from log_analyzer import LogRepo
+from lga import LogRepo
 
 repo = LogRepo.import_file(".logrepo", "access.log")
 
@@ -253,41 +253,41 @@ print(f"latency: min={stats['min']:.0f} max={stats['max']:.0f} avg={stats['avg']
 ### 拼接分段日志
 
 ```bash
-log-analyzer import logs/part1.log
-log-analyzer append logs/part2.log
-log-analyzer append logs/part3.log
-log-analyzer info   # 显示所有分段的总行数
+lga-cli import logs/part1.log
+lga-cli append logs/part2.log
+lga-cli append logs/part3.log
+lga-cli info   # 显示所有分段的总行数
 ```
 
 ### 分支分析
 
 ```bash
 # 导入基础数据
-log-analyzer import access.log
+lga-cli import access.log
 
 # 克隆出两个独立分析分支
-log-analyzer repo clone default error_analysis
-log-analyzer repo clone default perf_analysis
+lga-cli repo clone default error_analysis
+lga-cli repo clone default perf_analysis
 
 # 分析错误
-log-analyzer repo use error_analysis
-log-analyzer filter '" 500 ' --keep
-log-analyzer export 500_errors.log
+lga-cli repo use error_analysis
+lga-cli filter '" 500 ' --keep
+lga-cli export 500_errors.log
 
 # 分析性能（通过名称指定，无需切换）
-log-analyzer filter 'slow\|timeout' --keep --repo perf_analysis
+lga-cli filter 'slow\|timeout' --keep --repo perf_analysis
 
 # 原始数据不受影响
-log-analyzer view --repo default
+lga-cli view --repo default
 ```
 
 ### 敏感数据脱敏
 
 ```bash
-log-analyzer import access.log
-log-analyzer replace '\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}' 'X.X.X.X'
-log-analyzer replace 'user=\w+' 'user=REDACTED'
-log-analyzer export anonymized.log
+lga-cli import access.log
+lga-cli replace '\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}' 'X.X.X.X'
+lga-cli replace 'user=\w+' 'user=REDACTED'
+lga-cli export anonymized.log
 ```
 
 ## 性能基准
@@ -298,7 +298,7 @@ log-analyzer export anonymized.log
 
 ### 性能对比
 
-| 任务 | grep | ripgrep | sed | awk | Python | log-analyzer |
+| 任务 | grep | ripgrep | sed | awk | Python | lga-cli |
 |------|------|---------|-----|-----|--------|--------------|
 | 计数匹配 | 200 ms | 113 ms | — | 700 ms | 331 ms | **119 ms** |
 | 过滤写文件 | 281 ms | **179 ms** | — | 751 ms | 400 ms | 335 ms |
@@ -309,14 +309,14 @@ log-analyzer export anonymized.log
 
 **要点：**
 
-- **计数**：log-analyzer 追平 ripgrep（119 ms vs 113 ms）— 内部使用 grep-searcher + 零拷贝块迭代。快于 grep、awk、Python。
+- **计数**：lga-cli 追平 ripgrep（119 ms vs 113 ms）— 内部使用 grep-searcher + 零拷贝块迭代。快于 grep、awk、Python。
 - **正则替换**：总体最快，与 sed 持平；比 Python 快 10 倍。
-- **聚合（分组、Top-N、统计）**：**log-analyzer 最快** — 比 Python 快 4 倍，比 rg|sort|uniq 管道快 5.5 倍。
+- **聚合（分组、Top-N、统计）**：**lga-cli 最快** — 比 Python 快 4 倍，比 rg|sort|uniq 管道快 5.5 倍。
 - **过滤写文件**：1.9x ripgrep — 零拷贝优化后接近（此前 3x）。
 
 ### 易用性对比
 
-| 功能 | grep/rg/sed/awk | log-analyzer |
+| 功能 | grep/rg/sed/awk | lga-cli |
 |------|-----------------|--------------|
 | 计数匹配 | `grep -c` / `rg -c` | `collect_count(pattern)` |
 | 过滤写文件 | `grep pattern > out` | `stream_filter_to_file()` |
@@ -335,7 +335,7 @@ log-analyzer export anonymized.log
 ## 项目结构
 
 ```
-log-analyzer/
+lga/
 ├── build.sh                构建/安装/卸载脚本
 ├── Cargo.toml              Rust 包配置
 ├── pyproject.toml          Python 包配置（maturin）
@@ -434,17 +434,17 @@ maturin publish --repository testpypi   # 先在 TestPyPI 测试
 
 ### TUI 二进制下载
 
-预构建的 `la` 二进制可从 [GitHub Releases](https://github.com/log-analyzer/log-analyzer/releases) 下载。根据平台选择：
+预构建的 `lga` 二进制可从 [GitHub Releases](https://github.com/lga/lga/releases) 下载。根据平台选择：
 
 | 下载文件 | 类型 | 适用环境 |
 |----------|------|----------|
-| `la-x86_64-unknown-linux-musl` | 静态链接 (musl) | **任意 Linux 发行版** — 真正可移植，无需 glibc |
-| `la-aarch64-unknown-linux-musl` | 静态链接 (musl) | ARM Linux（树莓派、AWS Graviton） |
-| `la-x86_64-unknown-linux-gnu` | 动态链接 (glibc ≥ 2.35) | Ubuntu 22.04+、Fedora 36+、Debian 13+ |
-| `la-x86_64-unknown-linux-gnu-legacy` | 动态链接 (glibc ≥ 2.28) | RHEL 8+、CentOS 8+、Debian 10+、Ubuntu 20.04+ |
-| `la-x86_64-apple-darwin` | macOS Intel | Intel CPU 的 Mac |
-| `la-aarch64-apple-darwin` | macOS ARM | Apple Silicon Mac |
-| `la-x86_64-pc-windows-msvc` | Windows | Windows 10/11 |
+| `lga-x86_64-unknown-linux-musl` | 静态链接 (musl) | **任意 Linux 发行版** — 真正可移植，无需 glibc |
+| `lga-aarch64-unknown-linux-musl` | 静态链接 (musl) | ARM Linux（树莓派、AWS Graviton） |
+| `lga-x86_64-unknown-linux-gnu` | 动态链接 (glibc ≥ 2.35) | Ubuntu 22.04+、Fedora 36+、Debian 13+ |
+| `lga-x86_64-unknown-linux-gnu-legacy` | 动态链接 (glibc ≥ 2.28) | RHEL 8+、CentOS 8+、Debian 10+、Ubuntu 20.04+ |
+| `lga-x86_64-apple-darwin` | macOS Intel | Intel CPU 的 Mac |
+| `lga-aarch64-apple-darwin` | macOS ARM | Apple Silicon Mac |
+| `lga-x86_64-pc-windows-msvc` | Windows | Windows 10/11 |
 
 **推荐**: Linux 上优先使用 **musl** 版本——可在任意 Linux 发行版运行，不受 glibc 版本限制。如果 musl 版本不适用于你的架构，请选择与你发行版 glibc 匹配的 GNU 版本。
 

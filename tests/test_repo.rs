@@ -1,8 +1,8 @@
 use std::fs;
 use tempfile::TempDir;
 
-use log_analyzer_core::operator::Operation;
-use log_analyzer_core::repo::LogRepo;
+use lga_core::operator::Operation;
+use lga_core::repo::LogRepo;
 
 fn create_test_log(lines: usize) -> String {
     (0..lines)
@@ -719,7 +719,7 @@ fn test_collect_original() {
     assert_eq!(repo.current_line_count().unwrap(), 2);
 
     // collect_original should see all 4 lines
-    use log_analyzer_core::engine::{CollectResult, Collector};
+    use lga_core::engine::{CollectResult, Collector};
     let result = repo
         .collect_original(&Collector::Count { pattern: None })
         .unwrap();

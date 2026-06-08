@@ -1,4 +1,4 @@
-"""CLI frontend for log-analyzer."""
+"""CLI frontend for lga-cli."""
 
 import os
 import sys
@@ -7,7 +7,7 @@ import click
 from rich.console import Console
 from rich.table import Table
 
-from log_analyzer._core import LogRepo, Workspace
+from lga._core import LogRepo, Workspace
 
 console = Console()
 
@@ -37,7 +37,7 @@ def open_repo(workspace: str | None, repo: str | None):
 @click.group()
 @click.version_option(version="0.1.0")
 def main():
-    """log-analyzer: High-performance log analysis tool for large text files.
+    """lga-cli: High-performance log analysis tool for large text files.
 
     Stores logs in compressed repositories with full operation history
     and undo support. Designed for files >10GB.
@@ -413,7 +413,7 @@ def merge(sources: tuple[str, ...], target: str, workspace: str | None):
     will be concatenated in the given order into a new repo TARGET.
 
     Example:
-      log-analyzer merge repoA repoB repoC --into combined
+      lga-cli merge repoA repoB repoC --into combined
     """
     ws = get_workspace(workspace)
     if not ws.is_initialized():

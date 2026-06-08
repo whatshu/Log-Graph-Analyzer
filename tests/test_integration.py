@@ -5,7 +5,7 @@ import tempfile
 
 import pytest
 
-from log_analyzer import LogRepo
+from lga import LogRepo
 
 
 def generate_web_server_log(num_lines: int) -> str:

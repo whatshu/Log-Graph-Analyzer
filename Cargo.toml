@@ -1,5 +1,5 @@
 [package]
-name = "log_analyzer_core"
+name = "lga_core"
 version = "0.0.1"
 edition = "2021"
 description = "High-performance log analysis engine with compressed storage and reversible operations"
@@ -9,11 +9,11 @@ default = ["python-bindings"]
 python-bindings = ["pyo3/extension-module"]
 
 [lib]
-name = "log_analyzer_core"
+name = "lga_core"
 crate-type = ["cdylib", "rlib"]
 
 [[bin]]
-name = "la"
+name = "lga"
 path = "src/main.rs"
 
 [dependencies]

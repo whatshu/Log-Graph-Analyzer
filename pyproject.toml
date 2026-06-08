@@ -3,9 +3,9 @@ requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "log-analyzer"
+name = "lga"
 version = "0.0.1"
-description = "High-performance log analyzer for large text files (>10GB)"
+description = "High-performance log analysis tool for large text files (>10GB)"
 requires-python = ">=3.10"
 dependencies = [
     "click>=8.0",
@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [project.scripts]
-log-analyzer = "log_analyzer.cli:main"
+lga-cli = "lga.cli:main"
 
 [project.optional-dependencies]
 dev = [
@@ -23,7 +23,7 @@ dev = [
 
 [tool.maturin]
 python-source = "python"
-module-name = "log_analyzer._core"
+module-name = "lga._core"
 features = ["python-bindings"]
 
 [tool.pytest.ini_options]

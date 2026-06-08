@@ -4,12 +4,13 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::operator::{InverseData, Operation};
+use crate::tag::TagScopeRef;
 
 /// A single node in the operation history tree.
 ///
 /// Each node represents one applied operation (except root which is import).
-/// Nodes are immutable once created — they are never deleted, only orphaned
-/// when no branch points to them.
+/// Nodes support soft-delete — they can be marked deleted while remaining
+/// in the tree, allowing patterns to be preserved for reference.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryNode {
     /// Unique node identifier.
@@ -24,6 +25,12 @@ pub struct HistoryNode {
     pub inverse: Option<InverseData>,
     /// When this operation was applied.
     pub applied_at: DateTime<Utc>,
+    /// Soft-delete marker. Deleted nodes are kept but hidden from display.
+    #[serde(default)]
+    pub deleted: bool,
+    /// Tag scope active when this operation was applied.
+    #[serde(default)]
+    pub tag_scope: Option<TagScopeRef>,
 }
 
 /// The full operation history tree stored in operations.json.
@@ -68,6 +75,8 @@ impl HistoryTree {
             operation: None,
             inverse: None,
             applied_at: Utc::now(),
+            deleted: false,
+            tag_scope: None,
         };
 
         let mut branches = HashMap::new();
@@ -123,6 +132,17 @@ impl HistoryTree {
         operation: Operation,
         inverse: InverseData,
     ) -> usize {
+        self.add_child_with_scope(parent_id, operation, inverse, None)
+    }
+
+    /// Add a new child node with an optional tag scope. Returns the new node ID.
+    pub fn add_child_with_scope(
+        &mut self,
+        parent_id: usize,
+        operation: Operation,
+        inverse: InverseData,
+        tag_scope: Option<TagScopeRef>,
+    ) -> usize {
         let new_id = self.nodes.len();
         let node = HistoryNode {
             id: new_id,
@@ -131,6 +151,8 @@ impl HistoryTree {
             operation: Some(operation),
             inverse: Some(inverse),
             applied_at: Utc::now(),
+            deleted: false,
+            tag_scope,
         };
 
         // Register as child of parent
@@ -209,9 +231,95 @@ impl HistoryTree {
         self.nodes.len()
     }
 
-    /// Check if tree is empty (just root, no operations).
+    /// Check if tree is empty (just root, no operations or all deleted).
     pub fn is_empty(&self) -> bool {
         self.nodes.len() <= 1
+    }
+
+    // ── Node manipulation ──
+
+    /// Soft-delete a node: mark it `deleted` and reparent its children
+    /// to the deleted node's parent. Branches pointing to the deleted node
+    /// are moved to its parent.
+    ///
+    /// The root node (id=0) cannot be deleted.
+    /// Returns an error message if the node doesn't exist or is root.
+    pub fn soft_delete(&mut self, node_id: usize) -> Result<(), String> {
+        if node_id == 0 {
+            return Err("Cannot delete the root node".into());
+        }
+
+        let parent_id = self
+            .get_node(node_id)
+            .ok_or_else(|| format!("Node {} not found", node_id))?
+            .parent_id;
+
+        let children: Vec<usize> = self
+            .get_node(node_id)
+            .map(|n| n.children_ids.clone())
+            .unwrap_or_default();
+
+        // Mark the node as deleted
+        if let Some(node) = self.get_node_mut(node_id) {
+            node.deleted = true;
+        }
+
+        // Reparent all children to the deleted node's parent
+        if let Some(pid) = parent_id {
+            for &child_id in &children {
+                if let Some(child) = self.get_node_mut(child_id) {
+                    child.parent_id = Some(pid);
+                }
+            }
+            // Add children to parent's children list
+            if let Some(parent) = self.get_node_mut(pid) {
+                parent.children_ids.retain(|&id| id != node_id);
+                parent.children_ids.extend(&children);
+            }
+        } else {
+            // Node had no parent (shouldn't happen for non-root, but handle gracefully)
+            for &child_id in &children {
+                if let Some(child) = self.get_node_mut(child_id) {
+                    child.parent_id = None;
+                }
+            }
+        }
+
+        // Move branches pointing to this node to parent
+        if let Some(pid) = parent_id {
+            for (_, branch_head) in self.branches.iter_mut() {
+                if *branch_head == node_id {
+                    *branch_head = pid;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Check if `ancestor_id` is an ancestor of `descendant_id`.
+    pub fn is_ancestor(&self, ancestor_id: usize, descendant_id: usize) -> bool {
+        let path = self.path_to(descendant_id);
+        path.contains(&ancestor_id)
+    }
+
+    /// Get all descendant node IDs of a given node (including itself).
+    pub fn descendants(&self, node_id: usize) -> Vec<usize> {
+        let mut result = Vec::new();
+        self.collect_descendants(node_id, &mut result);
+        result
+    }
+
+    fn collect_descendants(&self, node_id: usize, result: &mut Vec<usize>) {
+        if self.get_node(node_id).is_none() {
+            return;
+        }
+        result.push(node_id);
+        if let Some(node) = self.get_node(node_id) {
+            for &child_id in &node.children_ids {
+                self.collect_descendants(child_id, result);
+            }
+        }
     }
 
     // ── Serialization ──
@@ -260,6 +368,8 @@ impl HistoryTree {
             operation: None,
             inverse: None,
             applied_at: Utc::now(),
+            deleted: false,
+            tag_scope: None,
         };
 
         let mut nodes = vec![root];
@@ -291,6 +401,8 @@ impl HistoryTree {
                 operation: Some(record.operation.clone()),
                 inverse: Some(record.inverse.clone()),
                 applied_at: record.applied_at,
+                deleted: false,
+                tag_scope: None,
             });
         }
 
@@ -359,14 +471,14 @@ impl HistoryTree {
             description: desc,
             applied_at: node.applied_at,
             has_children: !node.children_ids.is_empty(),
+            deleted: node.deleted,
+            tag_name: node.tag_scope.as_ref().map(|s| s.tag_name.clone()),
         });
 
-        // Visit children
+        // Visit children (include deleted nodes — they're shown dimmed)
         for (i, &child_id) in node.children_ids.iter().enumerate() {
             let is_last = i == node.children_ids.len() - 1;
             if !is_last {
-                // Push current node as ancestor for non-last children
-                // (they need "│" continuation)
                 ancestors.push(node_id);
             }
             self.visit_subtree(child_id, depth + 1, ancestors, result);
@@ -394,6 +506,10 @@ pub struct TopoEntry {
     pub description: String,
     pub applied_at: DateTime<Utc>,
     pub has_children: bool,
+    /// Whether this node is soft-deleted.
+    pub deleted: bool,
+    /// Tag scope name if this node was created with a tag scope.
+    pub tag_name: Option<String>,
 }
 
 #[cfg(test)]

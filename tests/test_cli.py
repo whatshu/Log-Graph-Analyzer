@@ -10,7 +10,7 @@ import tempfile
 import pytest
 from click.testing import CliRunner
 
-from log_analyzer.cli import main
+from lga.cli import main
 
 
 @pytest.fixture
