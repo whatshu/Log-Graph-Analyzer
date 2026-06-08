@@ -69,22 +69,56 @@ pub fn normal_mode(app: &mut App, key: KeyEvent) {
                 app.queue_undo();
             }
         }
+        // Horizontal scroll (left/right arrows)
+        KeyCode::Left => app.scroll_left(8),
+        KeyCode::Right => app.scroll_right(8),
+
         // View switching
         KeyCode::Char('h') => {
+            app.horizontal_scroll = 0;
             app.build_history();
             app.active_view = ViewKind::History;
         }
         KeyCode::Char('l') => {
+            app.horizontal_scroll = 0;
             app.active_view = ViewKind::LogView;
             app.load_viewport();
         }
         KeyCode::Char('r') => {
             app.active_view = ViewKind::RepoList;
         }
-        KeyCode::Char('a') => {
+        KeyCode::Char('s') => {
             app.active_view = ViewKind::Analytics;
         }
         KeyCode::Char('?') => app.show_help = !app.show_help,
+
+        // f: apply current search pattern as filter-keep
+        KeyCode::Char('f') => {
+            if app.search_query.is_empty() {
+                app.status_message = String::from("No active search — use / first");
+            } else {
+                let pattern = app.search_query.clone();
+                app.queue_operation(Operation::Filter {
+                    pattern: pattern.clone(),
+                    keep: true,
+                });
+                app.status_message = format!("Filter keep: {}", pattern);
+            }
+        }
+
+        // R: replace — use current search pattern, prompt for replacement
+        KeyCode::Char('R') => {
+            if app.search_query.is_empty() {
+                app.status_message = String::from("No active search — use / first");
+            } else {
+                app.input_mode = InputMode::Input;
+                app.input_buffer.clear();
+                app.input_prompt = format!(
+                    "Replace /{}/ → ",
+                    app.search_query
+                );
+            }
+        }
 
         // File browser for import
         KeyCode::Char('i') => app.open_file_browser(),
@@ -228,17 +262,19 @@ fn execute_command(app: &mut App, cmd: &str) {
     if cmd == "q" {
         app.should_quit = true;
     } else if let Some(pattern) = cmd.strip_prefix("f ") {
+        let resolved = resolve_pattern(&app.config, pattern);
         app.queue_operation(Operation::Filter {
-            pattern: pattern.to_string(),
+            pattern: resolved.clone(),
             keep: true,
         });
-        app.status_message = format!("Filter keep: {}", pattern);
+        app.status_message = format!("Filter keep: {}", resolved);
     } else if let Some(pattern) = cmd.strip_prefix("fr ") {
+        let resolved = resolve_pattern(&app.config, pattern);
         app.queue_operation(Operation::Filter {
-            pattern: pattern.to_string(),
+            pattern: resolved.clone(),
             keep: false,
         });
-        app.status_message = format!("Filter remove: {}", pattern);
+        app.status_message = format!("Filter remove: {}", resolved);
     } else if let Some(args) = cmd.strip_prefix("r ") {
         if let Some(inner) = parse_delimited(args, '/') {
             let parts: Vec<&str> = inner.splitn(2, '/').collect();
@@ -283,8 +319,35 @@ fn execute_command(app: &mut App, cmd: &str) {
     } else if let Some(name) = cmd.strip_prefix("repo ") {
         let name = name.trim();
         app.open_repo(Some(name));
+    } else if cmd == "filters" {
+        let names = app.config.filter_names();
+        if names.is_empty() {
+            app.status_message = String::from("No saved filters. Add them to ~/.log_analyzer/config.toml");
+        } else {
+            let list: Vec<String> = names
+                .iter()
+                .map(|n| {
+                    let pat = app.config.get_filter(n).unwrap_or("");
+                    format!("  @{} = \"{}\"", n, pat)
+                })
+                .collect();
+            // Show first few in status; full list is too long
+            app.status_message = format!("Saved filters: {}", list.join(", "));
+        }
     } else {
         app.error_message = Some(format!("Unknown command: {}", cmd));
+    }
+}
+
+/// Resolve a pattern that may be a @name reference to a saved filter.
+fn resolve_pattern(config: &log_analyzer_core::config::Config, pattern: &str) -> String {
+    let trimmed = pattern.trim();
+    if let Some(name) = trimmed.strip_prefix('@') {
+        config.get_filter(name).map(|s| s.to_string()).unwrap_or_else(|| {
+            trimmed.to_string()
+        })
+    } else {
+        trimmed.to_string()
     }
 }
 
@@ -295,7 +358,15 @@ fn parse_delimited(s: &str, delim: char) -> Option<&str> {
 }
 
 fn handle_input(app: &mut App, prompt: &str, input: &str) {
-    if prompt.contains("Import") {
+    if prompt.starts_with("Replace /") {
+        // Replace: pattern is the current search query, input is replacement
+        let pattern = app.search_query.clone();
+        app.queue_operation(Operation::Replace {
+            pattern: pattern.clone(),
+            replacement: input.to_string(),
+        });
+        app.status_message = format!("Replace /{}/ → {}", pattern, input);
+    } else if prompt.contains("Import") {
         let path = Path::new(input);
         if !path.exists() {
             app.error_message = Some(format!("File not found: {}", input));

@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Tabs};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Tabs};
 use ratatui::Frame;
 
 use log_analyzer_core::repo::LogRepo;
@@ -66,14 +66,16 @@ pub fn render(f: &mut Frame, app: &App) {
 fn render_action_bar(f: &mut Frame, area: Rect, app: &App) {
     let hints = match app.active_view {
         ViewKind::LogView => vec![
+            ("← →:ScrollH", COLOR_DIM),
             ("/:Search", COLOR_ACCENT),
+            ("f:Filter", COLOR_ACCENT),
             (":Cmd", COLOR_ACCENT),
             ("u:Undo", COLOR_ACCENT),
             ("i:Import", COLOR_HIGHLIGHT),
             ("e:Export", COLOR_HIGHLIGHT),
             ("h:History", COLOR_HIGHLIGHT),
             ("r:Repos", COLOR_DIM),
-            ("a:Stats", COLOR_DIM),
+            ("s:Stats", COLOR_DIM),
             ("?:Help", COLOR_DIM),
             ("q:Quit", COLOR_ERROR),
         ],
@@ -230,7 +232,14 @@ fn render_log_view(f: &mut Frame, area: Rect, app: &App) {
             };
 
             let num = format!("{:>width$}", global_line + 1, width = line_num_width);
-            let truncated = truncate_str(content, content_width as usize);
+            let content_slice = if app.horizontal_scroll > 0 {
+                let chars: Vec<char> = content.chars().collect();
+                let start = app.horizontal_scroll.min(chars.len());
+                chars[start..].iter().collect::<String>()
+            } else {
+                content.clone()
+            };
+            let truncated = truncate_str(&content_slice, content_width as usize);
 
             Line::from(vec![
                 Span::styled(format!(" {} ", num), num_style),
@@ -480,6 +489,9 @@ fn render_help_overlay(f: &mut Frame, area: Rect, _app: &App) {
         width: overlay_w,
         height: overlay_h,
     };
+
+    // Clear the background first so underlying content doesn't bleed through
+    f.render_widget(Clear, overlay_area);
 
     let block = Block::default()
         .borders(Borders::ALL)

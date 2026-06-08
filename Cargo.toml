@@ -32,6 +32,7 @@ chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
 crossbeam-channel = "0.5"
 parking_lot = "0.12"
+toml = "0.8"
 ratatui = "0.29"
 crossterm = "0.28"
 

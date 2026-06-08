@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::path::Path;
 
+use log_analyzer_core::config::Config;
 use log_analyzer_core::error::Result;
 use log_analyzer_core::operator::Operation;
 use log_analyzer_core::repo::{LogRepo, Workspace};
@@ -37,11 +38,13 @@ enum PendingOp {
 }
 
 pub struct App {
+    pub config: Config,
     pub workspace: Workspace,
     pub repo: RefCell<Option<LogRepo>>,
     pub repo_name: String,
     pub active_view: ViewKind,
     pub scroll_offset: usize,
+    pub horizontal_scroll: usize,
     pub cursor_line: usize,
     pub viewport_lines: Vec<String>,
     pub total_lines: usize,
@@ -83,17 +86,20 @@ pub struct HistoryNode {
 
 impl App {
     pub fn new(workspace_root: &Path, initial_repo: Option<&str>) -> Result<Self> {
+        let config = Config::load();
         let workspace = Workspace::open(workspace_root)?;
         let _ = workspace.migrate_if_needed();
 
         let in_tmux = std::env::var("TMUX").is_ok();
 
         let mut app = Self {
+            config,
             workspace,
             repo: RefCell::new(None),
             repo_name: String::new(),
             active_view: ViewKind::LogView,
             scroll_offset: 0,
+            horizontal_scroll: 0,
             cursor_line: 0,
             viewport_lines: Vec::new(),
             total_lines: 0,
@@ -547,6 +553,13 @@ impl App {
             self.scroll_offset = self.cursor_line.saturating_sub(15);
         }
         self.load_viewport();
+    }
+
+    pub fn scroll_right(&mut self, n: usize) {
+        self.horizontal_scroll = self.horizontal_scroll.saturating_add(n);
+    }
+    pub fn scroll_left(&mut self, n: usize) {
+        self.horizontal_scroll = self.horizontal_scroll.saturating_sub(n);
     }
 
     pub fn page_down(&mut self) { self.scroll_down(40); }
