@@ -285,6 +285,40 @@ impl LogRepo {
         Ok(lines.len())
     }
 
+    /// Compute the line state after applying operations up to (and including) `op_index`.
+    /// op_index is the operation index (0-based). Returns the lines at that point in history.
+    pub fn compute_state_at(&self, op_index: usize) -> Result<Vec<String>> {
+        if op_index >= self.operations.len() {
+            return Err(LogAnalyzerError::Repo(format!(
+                "Operation index {} out of range (total: {})",
+                op_index,
+                self.operations.len()
+            )));
+        }
+        let mut lines = self.read_all_original_lines()?;
+        for record in &self.operations[..=op_index] {
+            lines = record.operation.apply(lines)?;
+        }
+        Ok(lines)
+    }
+
+    /// Checkout to a specific operation index by undoing operations after it.
+    /// This is destructive: operations after op_index are permanently removed.
+    pub fn checkout_to(&mut self, op_index: usize) -> Result<()> {
+        if op_index >= self.operations.len() {
+            return Err(LogAnalyzerError::Repo(format!(
+                "Cannot checkout to {} — only {} operations in history",
+                op_index,
+                self.operations.len()
+            )));
+        }
+        // Undo until we reach the target
+        while self.operations.len() > op_index + 1 {
+            self.undo()?;
+        }
+        Ok(())
+    }
+
     /// Read lines from the current state (after operations).
     pub fn read_current_lines(&mut self, start: usize, count: usize) -> Result<Vec<String>> {
         let lines = self.get_current_lines()?;

@@ -7,8 +7,8 @@ use ratatui::Frame;
 use log_analyzer_core::repo::LogRepo;
 
 use super::app::{App, InputMode, ViewKind};
+use super::file_browser;
 
-const _COLOR_BG: Color = Color::Black;
 const COLOR_FG: Color = Color::White;
 const COLOR_ACCENT: Color = Color::Cyan;
 const COLOR_HIGHLIGHT: Color = Color::Yellow;
@@ -18,41 +18,138 @@ const COLOR_LINE_NUMBER: Color = Color::DarkGray;
 const COLOR_DIM: Color = Color::Gray;
 
 pub fn render(f: &mut Frame, app: &App) {
-    let main_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
+    // File browser takes over the full screen
+    if app.input_mode == InputMode::FileBrowser {
+        render_file_browser_fullscreen(f, f.area(), app);
+        return;
+    }
+
+    let has_input = matches!(app.input_mode, InputMode::Command | InputMode::Search | InputMode::Input);
+    let constraints: Vec<Constraint> = if has_input {
+        vec![
             Constraint::Length(1), // tabs
             Constraint::Min(1),    // main content
             Constraint::Length(1), // status bar
-            Constraint::Length(1), // input bar (only when needed)
-        ])
+            Constraint::Length(1), // action bar (normal) or input bar
+        ]
+    } else {
+        vec![
+            Constraint::Length(1), // tabs
+            Constraint::Min(1),    // main content
+            Constraint::Length(1), // status bar
+            Constraint::Length(1), // action bar (always visible in normal mode)
+        ]
+    };
+
+    let main_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
         .split(f.area());
 
     render_tabs(f, main_chunks[0], app);
     render_content(f, main_chunks[1], app);
     render_status(f, main_chunks[2], app);
 
-    // Input bar (conditional)
-    match app.input_mode {
-        InputMode::Command | InputMode::Search | InputMode::Input => {
-            render_input(f, main_chunks[3], app);
-        }
-        _ => {}
+    // Bottom bar: input or action hints
+    if has_input {
+        render_input(f, main_chunks[3], app);
+    } else {
+        render_action_bar(f, main_chunks[3], app);
     }
 
-    // Help overlay
     if app.show_help {
         render_help_overlay(f, f.area(), app);
     }
 }
 
+/// Context-sensitive action bar showing available non-vim operations.
+fn render_action_bar(f: &mut Frame, area: Rect, app: &App) {
+    let hints = match app.active_view {
+        ViewKind::LogView => vec![
+            ("/:Search", COLOR_ACCENT),
+            (":Cmd", COLOR_ACCENT),
+            ("u:Undo", COLOR_ACCENT),
+            ("i:Import", COLOR_HIGHLIGHT),
+            ("e:Export", COLOR_HIGHLIGHT),
+            ("h:History", COLOR_HIGHLIGHT),
+            ("r:Repos", COLOR_DIM),
+            ("a:Stats", COLOR_DIM),
+            ("?:Help", COLOR_DIM),
+            ("q:Quit", COLOR_ERROR),
+        ],
+        ViewKind::RepoList => vec![
+            ("Enter:Open", COLOR_HIGHLIGHT),
+            ("i:Import", COLOR_HIGHLIGHT),
+            ("c:Clone", COLOR_ACCENT),
+            ("d:Delete", COLOR_ERROR),
+            ("l:Log", COLOR_DIM),
+        ],
+        ViewKind::History => vec![
+            ("↑↓:Select", COLOR_ACCENT),
+            ("Enter:Checkout", COLOR_HIGHLIGHT),
+            ("e:Export", COLOR_HIGHLIGHT),
+            ("u:Undo", COLOR_ACCENT),
+            ("l:Log", COLOR_DIM),
+            ("?:Help", COLOR_DIM),
+        ],
+        ViewKind::Analytics => vec![
+            ("l:Log", COLOR_DIM),
+            ("h:History", COLOR_DIM),
+            ("?:Help", COLOR_DIM),
+        ],
+        _ => vec![
+            ("?:Help", COLOR_DIM),
+            ("q:Quit", COLOR_ERROR),
+        ],
+    };
+
+    let spans: Vec<Span> = hints
+        .iter()
+        .flat_map(|(text, color)| {
+            vec![
+                Span::styled(*text, Style::default().fg(*color).add_modifier(Modifier::BOLD)),
+                Span::raw("  "),
+            ]
+        })
+        .collect();
+
+    let p = Paragraph::new(Line::from(spans))
+        .style(Style::default().bg(Color::Rgb(20, 20, 20)));
+    f.render_widget(p, area);
+}
+
+fn render_file_browser_fullscreen(f: &mut Frame, area: Rect, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // header
+            Constraint::Min(1),   // browser content
+            Constraint::Length(1), // hints
+        ])
+        .split(area);
+
+    // Header
+    let header = Paragraph::new(Span::styled(
+        " File Browser — select a log file to import ",
+        Style::default().fg(COLOR_FG).bg(COLOR_ACCENT).add_modifier(Modifier::BOLD),
+    ));
+    f.render_widget(header, chunks[0]);
+
+    // Browser
+    file_browser::render_file_browser(f, chunks[1], &app.file_browser);
+
+    // Hints
+    file_browser::render_file_browser_hints(f, chunks[2]);
+}
+
 fn render_tabs(f: &mut Frame, area: Rect, app: &App) {
-    let titles = vec!["Log", "Repos", "Analytics"];
+    let titles = vec!["Log", "History", "Repos", "Stats"];
     let selected = match app.active_view {
-        ViewKind::LogView => 0,
-        ViewKind::RepoList => 1,
-        ViewKind::Analytics => 2,
-        ViewKind::Help => 0, // Help is an overlay
+        ViewKind::LogView | ViewKind::FileBrowser => 0,
+        ViewKind::History => 1,
+        ViewKind::RepoList => 2,
+        ViewKind::Analytics => 3,
+        ViewKind::Help => 0,
     };
 
     let tabs = Tabs::new(titles)
@@ -70,17 +167,18 @@ fn render_tabs(f: &mut Frame, area: Rect, app: &App) {
 
 fn render_content(f: &mut Frame, area: Rect, app: &App) {
     match app.active_view {
-        ViewKind::LogView => render_log_view(f, area, app),
+        ViewKind::LogView | ViewKind::FileBrowser => render_log_view(f, area, app),
         ViewKind::RepoList => render_repo_list(f, area, app),
         ViewKind::Analytics => render_analytics(f, area, app),
-        ViewKind::Help => render_log_view(f, area, app), // Help is overlay
+        ViewKind::History => render_history(f, area, app),
+        ViewKind::Help => render_log_view(f, area, app),
     }
 }
 
 fn render_log_view(f: &mut Frame, area: Rect, app: &App) {
     let repo = app.repo.borrow();
     if repo.is_none() {
-        let msg = "No repo open. Press 'i' to import a log file, or 'r' to browse repos.";
+        let msg = "No repo open. Press 'i' to import a log file, 'r' to browse repos.";
         let p = Paragraph::new(msg)
             .block(Block::default().borders(Borders::ALL).title("Log View"))
             .style(Style::default().fg(COLOR_DIM));
@@ -88,14 +186,13 @@ fn render_log_view(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    // Calculate line number width
     let line_num_width = if app.total_lines > 0 {
         (app.total_lines as f64).log10() as usize + 1
     } else {
         1
     };
     let line_num_width = line_num_width.max(4);
-    let content_width = area.width.saturating_sub(line_num_width as u16 + 3); // space + border
+    let content_width = area.width.saturating_sub(line_num_width as u16 + 3);
 
     let title = format!(
         " {} — {} lines ({} ops) ",
@@ -166,8 +263,7 @@ fn render_repo_list(f: &mut Frame, area: Rect, app: &App) {
 
     let lines: Vec<Line> = repos
         .iter()
-        .enumerate()
-        .map(|(_i, name)| {
+        .map(|name| {
             let marker = if *name == active { " * " } else { "   " };
             let style = if *name == app.repo_name {
                 Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)
@@ -176,10 +272,7 @@ fn render_repo_list(f: &mut Frame, area: Rect, app: &App) {
             } else {
                 Style::default().fg(COLOR_FG)
             };
-            Line::from(Span::styled(
-                format!("{}{}", marker, name),
-                style,
-            ))
+            Line::from(Span::styled(format!("{}{}", marker, name), style))
         })
         .collect();
 
@@ -188,34 +281,116 @@ fn render_repo_list(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(p, area);
 }
 
-fn render_analytics(f: &mut Frame, area: Rect, app: &App) {
-    let repo = app.repo.borrow();
-    if repo.is_none() {
-        let p = Paragraph::new("No repo open. Open a repo first to view analytics.")
-            .block(Block::default().borders(Borders::ALL).title("Analytics"))
+fn render_history(f: &mut Frame, area: Rect, app: &App) {
+    if app.history_nodes.is_empty() {
+        let p = Paragraph::new("No operation history. Apply some operations first.")
+            .block(Block::default().borders(Borders::ALL).title("Operation History"))
             .style(Style::default().fg(COLOR_DIM));
         f.render_widget(p, area);
         return;
     }
 
-    // Collect stats
+    let visible = area.height.saturating_sub(2) as usize;
+    let start = app.history_cursor.saturating_sub(visible / 2);
+    let end = (start + visible).min(app.history_nodes.len());
+    let start = if end - start < visible && start > 0 {
+        end.saturating_sub(visible)
+    } else {
+        start
+    };
+
+    let lines: Vec<Line> = app.history_nodes[start..end]
+        .iter()
+        .enumerate()
+        .map(|(i, node)| {
+            let idx = start + i;
+            let is_cursor = idx == app.history_cursor;
+            let is_last = idx == app.history_nodes.len() - 1;
+
+            let marker = if is_cursor {
+                if is_last { " ● " } else { " ◉ " }
+            } else if is_last {
+                " ○ "
+            } else {
+                " ◦ "
+            };
+
+            let _connector = if idx < app.history_nodes.len() - 1 {
+                "│"
+            } else {
+                " "
+            };
+
+            let style = if is_cursor {
+                Style::default().fg(Color::Black).bg(COLOR_ACCENT).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(COLOR_FG)
+            };
+
+            let desc = if node.line_count > 0 {
+                format!(
+                    "{}{:>2}  {:<50} {:>10} lines  {}",
+                    marker,
+                    node.id,
+                    truncate_str(&node.description, 50),
+                    format_count(node.line_count),
+                    node.applied_at,
+                )
+            } else {
+                format!(
+                    "{}{:>2}  {:<50} {:>10}  {}",
+                    marker,
+                    node.id,
+                    truncate_str(&node.description, 50),
+                    "",
+                    node.applied_at,
+                )
+            };
+
+            Line::from(vec![
+                Span::styled(desc, style),
+            ])
+        })
+        .collect();
+
+    let title = format!(
+        " Operation History — {} operations | ↑↓ select  Enter checkout  e export ",
+        app.history_nodes.len()
+    );
+    let p = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .style(Style::default().fg(COLOR_FG));
+    f.render_widget(p, area);
+}
+
+fn render_analytics(f: &mut Frame, area: Rect, app: &App) {
+    let repo = app.repo.borrow();
+    if repo.is_none() {
+        let p = Paragraph::new("No repo open. Open a repo first to view analytics.")
+            .block(Block::default().borders(Borders::ALL).title("Stats"))
+            .style(Style::default().fg(COLOR_DIM));
+        f.render_widget(p, area);
+        return;
+    }
+
     let stats_text = match repo.as_ref().unwrap().processor().stats() {
         Ok(stats) => {
             format!(
-                "Total Lines: {}\nTotal Bytes: {}\nAvg Line Length: {:.1}\nMax Line Length: {}\nMin Line Length: {}\nChunks: {}",
+                "Total Lines:  {}\nTotal Bytes:  {}\nAvg Length:   {:.1}\nMax Length:   {}\nMin Length:   {}\nChunks:       {}\n\nOperations:   {}",
                 stats.total_lines,
                 format_bytes(stats.total_bytes),
                 stats.avg_line_len,
                 stats.max_line_len,
                 stats.min_line_len,
                 stats.chunk_count,
+                repo.as_ref().map(|r: &LogRepo| r.history().len()).unwrap_or(0),
             )
         }
-        Err(e) => format!("Error collecting stats: {}", e),
+        Err(e) => format!("Error: {}", e),
     };
 
     let p = Paragraph::new(stats_text)
-        .block(Block::default().borders(Borders::ALL).title(" Analytics "))
+        .block(Block::default().borders(Borders::ALL).title(" Stats "))
         .style(Style::default().fg(COLOR_FG));
     f.render_widget(p, area);
 }
@@ -247,11 +422,8 @@ fn render_status(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_input(f: &mut Frame, area: Rect, app: &App) {
-    let prompt = &app.input_prompt;
-    let buffer = &app.input_buffer;
-    let _cursor_pos = buffer.len();
-
     let max_w = area.width.saturating_sub(3) as usize;
+    let buffer = &app.input_buffer;
     let visible_buf = if buffer.len() > max_w {
         let start = buffer.len().saturating_sub(max_w.saturating_sub(2));
         &buffer[start..]
@@ -259,103 +431,48 @@ fn render_input(f: &mut Frame, area: Rect, app: &App) {
         buffer.as_str()
     };
 
-    let text = format!("{} {}", prompt, visible_buf);
+    let text = format!("{} {}", app.input_prompt, visible_buf);
     let p = Paragraph::new(text).style(Style::default().fg(COLOR_FG).bg(Color::Rgb(30, 30, 30)));
     f.render_widget(p, area);
 }
 
 fn render_help_overlay(f: &mut Frame, area: Rect, _app: &App) {
     let help_text = vec![
-        Line::from(Span::styled(
-            " Keybindings ",
-            Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD),
-        )),
+        Line::from(Span::styled(" KEYBINDINGS ", Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD))),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("  j / k        ", Style::default().fg(COLOR_ACCENT)),
-            Span::raw("Scroll down / up"),
-        ]),
-        Line::from(vec![
-            Span::styled("  Ctrl+d / u   ", Style::default().fg(COLOR_ACCENT)),
-            Span::raw("Page down / up"),
-        ]),
-        Line::from(vec![
-            Span::styled("  gg / G       ", Style::default().fg(COLOR_ACCENT)),
-            Span::raw("Go to first / last line"),
-        ]),
+        Line::from(vec![Span::styled("  Navigation  ", Style::default().fg(COLOR_ACCENT))]),
+        Line::from(vec![Span::styled("  j/k ↑/↓     ", Style::default().fg(COLOR_ACCENT)), Span::raw("Scroll down/up")]),
+        Line::from(vec![Span::styled("  Ctrl+d/u    ", Style::default().fg(COLOR_ACCENT)), Span::raw("Page down/up")]),
+        Line::from(vec![Span::styled("  gg / G      ", Style::default().fg(COLOR_ACCENT)), Span::raw("Go to first/last line")]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("  /            ", Style::default().fg(COLOR_ACCENT)),
-            Span::raw("Search forward (regex)"),
-        ]),
-        Line::from(vec![
-            Span::styled("  n / N        ", Style::default().fg(COLOR_ACCENT)),
-            Span::raw("Next / previous match"),
-        ]),
+        Line::from(vec![Span::styled("  Search & Operations ", Style::default().fg(COLOR_ACCENT))]),
+        Line::from(vec![Span::styled("  /            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Search (regex)")]),
+        Line::from(vec![Span::styled("  n / N        ", Style::default().fg(COLOR_ACCENT)), Span::raw("Next/prev match")]),
+        Line::from(vec![Span::styled("  u            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Undo last operation")]),
+        Line::from(vec![Span::styled("  :            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Command mode")]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("  :            ", Style::default().fg(COLOR_ACCENT)),
-            Span::raw("Enter command mode"),
-        ]),
-        Line::from(vec![
-            Span::styled("  u            ", Style::default().fg(COLOR_ACCENT)),
-            Span::raw("Undo last operation"),
-        ]),
+        Line::from(vec![Span::styled("  Views       ", Style::default().fg(COLOR_ACCENT))]),
+        Line::from(vec![Span::styled("  l            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Log view")]),
+        Line::from(vec![Span::styled("  h            ", Style::default().fg(COLOR_ACCENT)), Span::raw("History tree")]),
+        Line::from(vec![Span::styled("  r            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Repo list")]),
+        Line::from(vec![Span::styled("  a            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Stats")]),
+        Line::from(vec![Span::styled("  i            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Import file (browser)")]),
+        Line::from(vec![Span::styled("  e            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Export current state")]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("  r / l / a    ", Style::default().fg(COLOR_ACCENT)),
-            Span::raw("Views: Repos / Log / Analytics"),
-        ]),
-        Line::from(vec![
-            Span::styled("  i            ", Style::default().fg(COLOR_ACCENT)),
-            Span::raw("Import log file"),
-        ]),
-        Line::from(vec![
-            Span::styled("  e            ", Style::default().fg(COLOR_ACCENT)),
-            Span::raw("Export current state"),
-        ]),
+        Line::from(vec![Span::styled("  Other       ", Style::default().fg(COLOR_ACCENT))]),
+        Line::from(vec![Span::styled("  ?            ", Style::default().fg(COLOR_ACCENT)), Span::raw("This help")]),
+        Line::from(vec![Span::styled("  q / Ctrl+C   ", Style::default().fg(COLOR_ACCENT)), Span::raw("Quit")]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("  ?            ", Style::default().fg(COLOR_ACCENT)),
-            Span::raw("Toggle this help"),
-        ]),
-        Line::from(vec![
-            Span::styled("  q / Ctrl+C   ", Style::default().fg(COLOR_ACCENT)),
-            Span::raw("Quit"),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            " Commands ",
-            Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD),
-        )),
-        Line::from(vec![
-            Span::styled("  :f <regex>   ", Style::default().fg(COLOR_ACCENT)),
-            Span::raw("Filter — keep matching lines"),
-        ]),
-        Line::from(vec![
-            Span::styled("  :fr <regex>  ", Style::default().fg(COLOR_ACCENT)),
-            Span::raw("Filter — remove matching lines"),
-        ]),
-        Line::from(vec![
-            Span::styled("  :r /pat/repl/", Style::default().fg(COLOR_ACCENT)),
-            Span::raw("Replace regex"),
-        ]),
-        Line::from(vec![
-            Span::styled("  :w <path>    ", Style::default().fg(COLOR_ACCENT)),
-            Span::raw("Export current state to file"),
-        ]),
-        Line::from(vec![
-            Span::styled("  :repo <name> ", Style::default().fg(COLOR_ACCENT)),
-            Span::raw("Switch active repo"),
-        ]),
-        Line::from(vec![
-            Span::styled("  :q           ", Style::default().fg(COLOR_ACCENT)),
-            Span::raw("Quit"),
-        ]),
+        Line::from(vec![Span::styled("  Commands (:)", Style::default().fg(COLOR_ACCENT))]),
+        Line::from(vec![Span::styled("  :f <pat>     ", Style::default().fg(COLOR_ACCENT)), Span::raw("Filter keep")]),
+        Line::from(vec![Span::styled("  :fr <pat>    ", Style::default().fg(COLOR_ACCENT)), Span::raw("Filter remove")]),
+        Line::from(vec![Span::styled("  :r /pat/repl/", Style::default().fg(COLOR_ACCENT)), Span::raw("Replace")]),
+        Line::from(vec![Span::styled("  :w <path>    ", Style::default().fg(COLOR_ACCENT)), Span::raw("Export to file")]),
+        Line::from(vec![Span::styled("  :d <idx>...  ", Style::default().fg(COLOR_ACCENT)), Span::raw("Delete lines")]),
+        Line::from(vec![Span::styled("  :repo <name> ", Style::default().fg(COLOR_ACCENT)), Span::raw("Switch repo")]),
     ];
 
-    // Calculate overlay size
-    let overlay_w = 50.min(area.width);
+    let overlay_w = 60.min(area.width);
     let overlay_h = (help_text.len() as u16 + 2).min(area.height);
     let overlay_area = Rect {
         x: (area.width.saturating_sub(overlay_w)) / 2,
@@ -380,6 +497,16 @@ fn format_bytes(bytes: usize) -> String {
         unit += 1;
     }
     format!("{:.1} {}", size, UNITS[unit])
+}
+
+fn format_count(n: usize) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}K", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
 }
 
 fn truncate_str(s: &str, max_width: usize) -> String {

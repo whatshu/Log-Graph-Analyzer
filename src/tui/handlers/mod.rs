@@ -1,5 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use log_analyzer_core::operator::Operation;
+use std::path::Path;
 
 use super::app::{App, InputMode, ViewKind};
 
@@ -9,10 +10,24 @@ pub fn normal_mode(app: &mut App, key: KeyEvent) {
             app.should_quit = true;
         }
         KeyCode::Char('j') | KeyCode::Down => {
-            app.scroll_down(1);
+            match app.active_view {
+                ViewKind::History => {
+                    if app.history_cursor + 1 < app.history_nodes.len() {
+                        app.history_cursor += 1;
+                    }
+                }
+                _ => app.scroll_down(1),
+            }
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            app.scroll_up(1);
+            match app.active_view {
+                ViewKind::History => {
+                    if app.history_cursor > 0 {
+                        app.history_cursor -= 1;
+                    }
+                }
+                _ => app.scroll_up(1),
+            }
         }
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.page_down();
@@ -21,10 +36,16 @@ pub fn normal_mode(app: &mut App, key: KeyEvent) {
             app.page_up();
         }
         KeyCode::Char('g') => {
-            app.go_to_line(0);
+            if app.active_view == ViewKind::History {
+                app.history_cursor = 0;
+            } else {
+                app.go_to_line(0);
+            }
         }
         KeyCode::Char('G') => {
-            if app.total_lines > 0 {
+            if app.active_view == ViewKind::History {
+                app.history_cursor = app.history_nodes.len().saturating_sub(1);
+            } else if app.total_lines > 0 {
                 app.go_to_line(app.total_lines - 1);
             }
         }
@@ -38,44 +59,66 @@ pub fn normal_mode(app: &mut App, key: KeyEvent) {
             app.input_buffer.clear();
             app.input_prompt = String::from(":");
         }
-        KeyCode::Char('n') => {
-            app.next_match();
-        }
-        KeyCode::Char('N') => {
-            app.prev_match();
-        }
+        KeyCode::Char('n') => app.next_match(),
+        KeyCode::Char('N') => app.prev_match(),
         KeyCode::Char('u') => {
-            app.queue_undo();
+            if app.active_view == ViewKind::History {
+                // Undo from history view
+                app.queue_undo();
+            } else {
+                app.queue_undo();
+            }
         }
-        KeyCode::Char('r') => {
-            app.active_view = ViewKind::RepoList;
-            app.status_message = String::from("Repo list");
+        // View switching
+        KeyCode::Char('h') => {
+            app.build_history();
+            app.active_view = ViewKind::History;
         }
         KeyCode::Char('l') => {
             app.active_view = ViewKind::LogView;
             app.load_viewport();
         }
+        KeyCode::Char('r') => {
+            app.active_view = ViewKind::RepoList;
+        }
         KeyCode::Char('a') => {
             app.active_view = ViewKind::Analytics;
         }
-        KeyCode::Char('?') => {
-            app.show_help = !app.show_help;
-        }
-        KeyCode::Char('i') => {
-            app.input_mode = InputMode::Input;
-            app.input_buffer.clear();
-            app.input_prompt = String::from("Import file path: ");
-        }
+        KeyCode::Char('?') => app.show_help = !app.show_help,
+
+        // File browser for import
+        KeyCode::Char('i') => app.open_file_browser(),
+
+        // Export
         KeyCode::Char('e') => {
-            app.input_mode = InputMode::Input;
-            app.input_buffer.clear();
-            app.input_prompt = String::from("Export to file: ");
+            if app.active_view == ViewKind::History {
+                let node_idx = app.history_cursor;
+                app.pending_history_export = Some(node_idx);
+                let default_name = format!("export_op_{}.log", node_idx);
+                app.input_mode = InputMode::Input;
+                app.input_buffer = default_name;
+                app.input_prompt = String::from("Export path: ");
+            } else {
+                app.pending_history_export = None;
+                app.input_mode = InputMode::Input;
+                app.input_buffer.clear();
+                app.input_prompt = String::from("Export to file: ");
+            }
         }
+
+        // History view specific
         KeyCode::Enter => {
-            if app.active_view == ViewKind::RepoList {
+            if app.active_view == ViewKind::History {
+                if app.history_cursor < app.history_nodes.len() {
+                    app.queue_checkout(app.history_cursor);
+                }
+            } else if app.active_view == ViewKind::RepoList {
                 if let Ok(repos) = app.workspace.list() {
                     if !repos.is_empty() {
-                        app.open_repo(Some(&repos[0]));
+                        let idx = 0usize; // Simplified — would need cursor in repo list
+                        if idx < repos.len() {
+                            app.open_repo(Some(&repos[idx]));
+                        }
                     }
                 }
             }
@@ -92,12 +135,8 @@ pub fn command_mode(app: &mut App, key: KeyEvent) {
             app.input_mode = InputMode::Normal;
             execute_command(app, &cmd);
         }
-        KeyCode::Char(c) => {
-            app.input_buffer.push(c);
-        }
-        KeyCode::Backspace => {
-            app.input_buffer.pop();
-        }
+        KeyCode::Char(c) => app.input_buffer.push(c),
+        KeyCode::Backspace => { app.input_buffer.pop(); }
         _ => {}
     }
 }
@@ -112,12 +151,8 @@ pub fn search_mode(app: &mut App, key: KeyEvent) {
                 app.do_search(&query);
             }
         }
-        KeyCode::Char(c) => {
-            app.input_buffer.push(c);
-        }
-        KeyCode::Backspace => {
-            app.input_buffer.pop();
-        }
+        KeyCode::Char(c) => app.input_buffer.push(c),
+        KeyCode::Backspace => { app.input_buffer.pop(); }
         _ => {}
     }
 }
@@ -131,11 +166,56 @@ pub fn input_mode(app: &mut App, key: KeyEvent) {
             app.input_mode = InputMode::Normal;
             handle_input(app, &prompt, &input);
         }
-        KeyCode::Char(c) => {
-            app.input_buffer.push(c);
+        KeyCode::Char(c) => app.input_buffer.push(c),
+        KeyCode::Backspace => { app.input_buffer.pop(); }
+        _ => {}
+    }
+}
+
+/// Handle file browser mode keys.
+pub fn file_browser_mode(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Char('q') | KeyCode::Esc => {
+            app.input_mode = InputMode::Normal;
+            app.status_message = String::from("File browser cancelled");
         }
-        KeyCode::Backspace => {
-            app.input_buffer.pop();
+        KeyCode::Char('j') | KeyCode::Down => {
+            app.file_browser.move_down();
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            app.file_browser.move_up();
+        }
+        KeyCode::Char('h') | KeyCode::Left => {
+            // Go to parent directory
+            if let Some(parent) = app.file_browser.current_dir.parent() {
+                app.file_browser.current_dir = parent.to_path_buf();
+                app.file_browser.selected_index = 0;
+                app.file_browser.scroll_offset = 0;
+                app.file_browser.refresh();
+            }
+        }
+        KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => {
+            if app.file_browser.enter_dir() {
+                // File selected — import it
+                app.import_from_file_browser();
+            }
+        }
+        KeyCode::Char('.') => {
+            app.file_browser.toggle_hidden();
+        }
+        KeyCode::Char('/') => {
+            app.input_mode = InputMode::Search;
+            app.input_buffer.clear();
+            app.input_prompt = String::from("Filter: ");
+            // After search, apply filter
+        }
+        KeyCode::Char('g') => {
+            app.file_browser.selected_index = 0;
+            app.file_browser.scroll_offset = 0;
+        }
+        KeyCode::Char('G') => {
+            let last = app.file_browser.entries.len().saturating_sub(1);
+            app.file_browser.selected_index = last;
         }
         _ => {}
     }
@@ -143,10 +223,7 @@ pub fn input_mode(app: &mut App, key: KeyEvent) {
 
 fn execute_command(app: &mut App, cmd: &str) {
     let cmd = cmd.trim();
-
-    if cmd.is_empty() {
-        return;
-    }
+    if cmd.is_empty() { return; }
 
     if cmd == "q" {
         app.should_quit = true;
@@ -170,27 +247,35 @@ fn execute_command(app: &mut App, cmd: &str) {
                     pattern: parts[0].to_string(),
                     replacement: parts[1].to_string(),
                 });
-                app.status_message =
-                    format!("Replace /{}/ -> {}", parts[0], parts[1]);
+                app.status_message = format!("Replace /{}/ -> {}", parts[0], parts[1]);
             } else {
-                app.error_message =
-                    Some("Invalid replace syntax. Use :r /pat/repl/".to_string());
+                app.error_message = Some("Invalid replace syntax. Use :r /pat/repl/".to_string());
             }
         } else {
-            app.error_message =
-                Some("Invalid replace syntax. Use :r /pat/repl/".to_string());
+            app.error_message = Some("Invalid replace syntax. Use :r /pat/repl/".to_string());
+        }
+    } else if let Some(indices_str) = cmd.strip_prefix("d ") {
+        let indices: Vec<usize> = indices_str
+            .split_whitespace()
+            .filter_map(|s| s.parse().ok())
+            .collect();
+        if indices.is_empty() {
+            app.error_message = Some("Usage: :d <line_number>...".to_string());
+        } else {
+            // Convert 1-based UI indices to 0-based
+            let zero_based: Vec<usize> = indices.iter().map(|i| i.saturating_sub(1)).collect();
+            app.queue_operation(Operation::DeleteLines {
+                line_indices: zero_based,
+            });
+            app.status_message = format!("Delete {} lines", indices.len());
         }
     } else if let Some(path) = cmd.strip_prefix("w ") {
         let path = path.trim();
         let mut repo_mut = app.repo.borrow_mut();
         if let Some(ref mut r) = *repo_mut {
-            match r.export(std::path::Path::new(path)) {
-                Ok(()) => {
-                    app.status_message = format!("Exported to {}", path);
-                }
-                Err(e) => {
-                    app.error_message = Some(format!("Export failed: {}", e));
-                }
+            match r.export(Path::new(path)) {
+                Ok(()) => app.status_message = format!("Exported to {}", path),
+                Err(e) => app.error_message = Some(format!("Export failed: {}", e)),
             }
         } else {
             app.error_message = Some("No repo open".to_string());
@@ -198,14 +283,12 @@ fn execute_command(app: &mut App, cmd: &str) {
     } else if let Some(name) = cmd.strip_prefix("repo ") {
         let name = name.trim();
         app.open_repo(Some(name));
-    } else if cmd == "stats" {
-        app.active_view = ViewKind::Analytics;
     } else {
         app.error_message = Some(format!("Unknown command: {}", cmd));
     }
 }
 
-fn parse_delimited<'a>(s: &'a str, delim: char) -> Option<&'a str> {
+fn parse_delimited(s: &str, delim: char) -> Option<&str> {
     let s = s.strip_prefix(delim)?;
     let end = s.find(delim)?;
     Some(&s[..end])
@@ -213,7 +296,7 @@ fn parse_delimited<'a>(s: &'a str, delim: char) -> Option<&'a str> {
 
 fn handle_input(app: &mut App, prompt: &str, input: &str) {
     if prompt.contains("Import") {
-        let path = std::path::Path::new(input);
+        let path = Path::new(input);
         if !path.exists() {
             app.error_message = Some(format!("File not found: {}", input));
             return;
@@ -234,20 +317,17 @@ fn handle_input(app: &mut App, prompt: &str, input: &str) {
                 app.load_viewport();
                 app.status_message = format!("Imported '{}' as '{}'", input, name);
             }
-            Err(e) => {
-                app.error_message = Some(format!("Import failed: {}", e));
-            }
+            Err(e) => app.error_message = Some(format!("Import failed: {}", e)),
         }
+    } else if prompt.contains("Export path") {
+        let node_idx = app.pending_history_export.take().unwrap_or(0);
+        app.queue_export_from(node_idx, input.to_string());
     } else if prompt.contains("Export") {
         let mut repo_mut = app.repo.borrow_mut();
         if let Some(ref mut r) = *repo_mut {
-            match r.export(std::path::Path::new(input)) {
-                Ok(()) => {
-                    app.status_message = format!("Exported to {}", input);
-                }
-                Err(e) => {
-                    app.error_message = Some(format!("Export failed: {}", e));
-                }
+            match r.export(Path::new(input)) {
+                Ok(()) => app.status_message = format!("Exported to {}", input),
+                Err(e) => app.error_message = Some(format!("Export failed: {}", e)),
             }
         } else {
             app.error_message = Some("No repo open".to_string());

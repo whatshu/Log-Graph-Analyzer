@@ -3,6 +3,7 @@ mod event;
 mod ui;
 pub mod widgets;
 pub mod handlers;
+pub mod file_browser;
 
 use std::io;
 use std::path::Path;
@@ -18,7 +19,7 @@ use ui::render;
 use log_analyzer_core::error::Result;
 
 pub fn run(workspace_root: &Path, initial_repo: Option<&str>) -> Result<()> {
-    // Ensure terminal is clean on entry
+    // Clean terminal state on entry
     let _ = crossterm::execute!(
         io::stdout(),
         crossterm::terminal::LeaveAlternateScreen,
@@ -26,6 +27,11 @@ pub fn run(workspace_root: &Path, initial_repo: Option<&str>) -> Result<()> {
     );
 
     let mut app = App::new(workspace_root, initial_repo)?;
+
+    // Tmux: set window title if in tmux
+    if app.in_tmux {
+        tmux_set_title("log-analyzer");
+    }
 
     setup_terminal()?;
     let backend = CrosstermBackend::new(io::stdout());
@@ -35,8 +41,13 @@ pub fn run(workspace_root: &Path, initial_repo: Option<&str>) -> Result<()> {
     let result = run_loop(&mut terminal, &mut app, tick_rate);
 
     restore_terminal()?;
-    result.map_err(|e| log_analyzer_core::error::LogAnalyzerError::Io(e))?;
 
+    // Tmux: reset title
+    if app.in_tmux {
+        tmux_set_title("log-analyzer (exited)");
+    }
+
+    result.map_err(|e| log_analyzer_core::error::LogAnalyzerError::Io(e))?;
     Ok(())
 }
 
@@ -60,35 +71,52 @@ fn run_loop(
 
         app.apply_pending();
     }
-
     Ok(())
 }
 
 fn handle_key(app: &mut App, key: KeyEvent) {
+    // Ctrl+C always quits
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
         app.should_quit = true;
         return;
     }
 
+    // Esc behavior: in file browser, cancel; otherwise clear input modes
     if key.code == KeyCode::Esc {
         match app.input_mode {
+            InputMode::FileBrowser => {
+                app.input_mode = InputMode::Normal;
+                app.status_message = String::from("cancelled");
+                return;
+            }
             InputMode::Normal => {
                 app.error_message = None;
                 app.status_message.clear();
+                return;
             }
             _ => {
                 app.input_mode = InputMode::Normal;
                 app.input_buffer.clear();
                 app.status_message = String::from("cancelled");
+                return;
             }
         }
-        return;
     }
 
+    // Route to the correct handler based on input mode
     match app.input_mode {
         InputMode::Normal => handlers::normal_mode(app, key),
         InputMode::Command => handlers::command_mode(app, key),
         InputMode::Search => handlers::search_mode(app, key),
         InputMode::Input => handlers::input_mode(app, key),
+        InputMode::FileBrowser => handlers::file_browser_mode(app, key),
     }
+}
+
+/// Set tmux window title via ANSI escape sequences.
+fn tmux_set_title(title: &str) {
+    // Set both window title and icon name
+    print!("\x1b]0;{}\x07", title);
+    // Also set xterm window title
+    print!("\x1b]2;{}\x07", title);
 }
