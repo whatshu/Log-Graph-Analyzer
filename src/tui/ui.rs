@@ -64,6 +64,10 @@ pub fn render(f: &mut Frame, app: &mut App) {
     if app.show_help {
         render_help_overlay(f, f.area(), app);
     }
+
+    if app.show_collect_detail {
+        render_collect_detail(f, f.area(), app);
+    }
 }
 
 /// Context-sensitive action bar showing available non-vim operations.
@@ -73,6 +77,7 @@ fn render_action_bar(f: &mut Frame, area: Rect, app: &App) {
             ("← → ^ $:HScroll", COLOR_DIM),
             ("/:Search", COLOR_ACCENT),
             ("f/F:Filter", COLOR_ACCENT),
+            ("c:Collect", COLOR_ACCENT),
             (":Cmd", COLOR_ACCENT),
             ("u:Undo", COLOR_ACCENT),
             ("i:Import", COLOR_HIGHLIGHT),
@@ -94,6 +99,7 @@ fn render_action_bar(f: &mut Frame, area: Rect, app: &App) {
             ("↑↓:Select", COLOR_ACCENT),
             ("Enter:Checkout", COLOR_HIGHLIGHT),
             ("e:Export", COLOR_HIGHLIGHT),
+            ("c:Collect", COLOR_ACCENT),
             ("u:Undo", COLOR_ACCENT),
             ("l:Log", COLOR_DIM),
             ("?:Help", COLOR_DIM),
@@ -424,6 +430,14 @@ fn render_history(f: &mut Frame, area: Rect, app: &App) {
                 ));
             }
 
+            // Collect result summary
+            if let Some(ref collect) = node.collect_summary {
+                label_spans.push(Span::styled(
+                    format!("  → {}", collect),
+                    Style::default().fg(COLOR_DIM),
+                ));
+            }
+
             spans.push(marker);
             spans.push(id_span);
             spans.push(desc_span);
@@ -598,6 +612,52 @@ fn render_help_overlay(f: &mut Frame, area: Rect, _app: &App) {
         .borders(Borders::ALL)
         .style(Style::default().bg(Color::Rgb(20, 20, 30)));
     let p = Paragraph::new(help_text).block(block);
+    f.render_widget(p, overlay_area);
+}
+
+fn render_collect_detail(f: &mut Frame, area: Rect, app: &App) {
+    if app.collect_detail.is_none() {
+        return;
+    }
+
+    let detail = app.collect_detail.as_ref().unwrap();
+    let detail_lines: Vec<&str> = detail.lines().collect();
+    // Count display width of the widest line
+    let max_line_width: u16 = detail_lines
+        .iter()
+        .map(|l| l.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum::<usize>())
+        .max()
+        .unwrap_or(40) as u16;
+
+    let overlay_w = (max_line_width + 6).min(area.width.saturating_sub(4)).max(30);
+    let overlay_h = (detail_lines.len() as u16 + 4).min(area.height.saturating_sub(4));
+
+    let overlay_area = Rect {
+        x: (area.width.saturating_sub(overlay_w)) / 2,
+        y: (area.height.saturating_sub(overlay_h)) / 2,
+        width: overlay_w,
+        height: overlay_h,
+    };
+
+    f.render_widget(Clear, overlay_area);
+
+    let mut lines: Vec<Line> = detail_lines
+        .iter()
+        .take(overlay_h.saturating_sub(2) as usize)
+        .map(|s| Line::from(Span::styled(*s, Style::default().fg(COLOR_FG))))
+        .collect();
+
+    // Add close hint at bottom
+    lines.push(Line::from(Span::styled(
+        " Press c/q/Esc to close",
+        Style::default().fg(COLOR_DIM).add_modifier(Modifier::ITALIC),
+    )));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Collect Result ")
+        .style(Style::default().bg(Color::Rgb(20, 20, 30)));
+    let p = Paragraph::new(lines).block(block);
     f.render_widget(p, overlay_area);
 }
 

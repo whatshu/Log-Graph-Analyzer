@@ -36,8 +36,95 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
+        let mut filters = HashMap::new();
+        // ── Built-in preset filter patterns ──────────────────────────
+        // These are always available and can be overridden by any
+        // config tier (system / user / local).  Use with :f @name
+        // or :r @name/replacement/ in the TUI.
+        filters.insert(
+            "timestamp".to_string(),
+            r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}".to_string(),
+        );
+        filters.insert(
+            "level".to_string(),
+            r"\b(TRACE|DEBUG|INFO|NOTICE|WARN|WARNING|ERROR|FATAL|CRITICAL)\b".to_string(),
+        );
+        filters.insert(
+            "service".to_string(),
+            r"\bservice[=:]\s*\S+".to_string(),
+        );
+        filters.insert(
+            "host".to_string(),
+            r"\b(?:host|hostname)[=:]\s*\S+".to_string(),
+        );
+        filters.insert(
+            "pid".to_string(),
+            r"\bpid[=:]\s*\d+".to_string(),
+        );
+        filters.insert(
+            "tid".to_string(),
+            r"\b(?:tid|thread_id|threadId)[=:]\s*\d+".to_string(),
+        );
+        filters.insert(
+            "request_id".to_string(),
+            r"\b(?:request_id|requestId|req_id|reqId)[=:]\s*\S+".to_string(),
+        );
+        filters.insert(
+            "trace_id".to_string(),
+            r"\b(?:trace_id|traceId|trace-id)[=:]\s*\S+".to_string(),
+        );
+        filters.insert(
+            "span_id".to_string(),
+            r"\b(?:span_id|spanId|span-id)[=:]\s*\S+".to_string(),
+        );
+        filters.insert(
+            "user_id".to_string(),
+            r"\b(?:user_id|userId|uid)[=:]\s*\S+".to_string(),
+        );
+        filters.insert(
+            "client_ip".to_string(),
+            r"\b(?:\d{1,3}\.){3}\d{1,3}\b".to_string(),
+        );
+        filters.insert(
+            "status_code".to_string(),
+            r"\b[1-5]\d{2}\b".to_string(),
+        );
+        filters.insert(
+            "latency".to_string(),
+            r"\b(?:latency|duration|elapsed|took|cost)[=:]\s*\d+(?:\.\d+)?\s*(?:ms|us|ns|s)?".to_string(),
+        );
+        filters.insert(
+            "error_code".to_string(),
+            r"\b(?:error_code|err_code|errcode|errno)[=:]\s*\S+".to_string(),
+        );
+        filters.insert(
+            "module".to_string(),
+            r"\bmodule[=:]\s*\S+".to_string(),
+        );
+        filters.insert(
+            "function".to_string(),
+            r"\b(?:function|func|fn|method|handler)[=:]\s*\S+".to_string(),
+        );
+        filters.insert(
+            "message".to_string(),
+            r"\b(?:message|msg|text|body)[=:]\s*".to_string(),
+        );
+        // General-purpose convenience patterns
+        filters.insert(
+            "error".to_string(),
+            r"(?i)\b(?:error|err|fail|fatal|exception|crash)\b".to_string(),
+        );
+        filters.insert(
+            "warn".to_string(),
+            r"(?i)\b(?:warn|warning)\b".to_string(),
+        );
+        filters.insert(
+            "json".to_string(),
+            r#"^\s*[{[]"#.to_string(),
+        );
+
         Self {
-            filters: HashMap::new(),
+            filters,
             workspace_dir: None,
             default_page_size: None,
             show_hidden_files: false,
@@ -123,7 +210,11 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = Config::default();
-        assert!(config.filters.is_empty());
+        // Built-in presets are always present
+        assert!(!config.filters.is_empty());
+        assert!(config.filters.contains_key("timestamp"));
+        assert!(config.filters.contains_key("level"));
+        assert!(config.filters.contains_key("error"));
         assert!(config.workspace_dir.is_none());
         assert!(config.default_page_size.is_none());
         assert!(!config.show_hidden_files);
@@ -193,6 +284,9 @@ mod tests {
 
         let mut names = config.filter_names();
         names.sort();
-        assert_eq!(names, vec![&"a".to_string(), &"b".to_string()]);
+        // Custom filters "a" and "b" appear alongside built-in presets
+        assert!(names.contains(&&"a".to_string()));
+        assert!(names.contains(&&"b".to_string()));
+        assert!(names.contains(&&"timestamp".to_string()));
     }
 }

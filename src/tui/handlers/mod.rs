@@ -1,4 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use log_analyzer_core::engine::Collector;
 use log_analyzer_core::operator::Operation;
 use std::path::Path;
 
@@ -76,6 +77,12 @@ pub fn normal_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Char('$') => app.go_to_line_end(),
 
         // View switching
+        // c: enter collect command mode
+        KeyCode::Char('c') => {
+            app.input_mode = InputMode::Command;
+            app.input_buffer = String::from("collect ");
+            app.input_prompt = String::from(":");
+        }
         KeyCode::Char('h') => {
             app.horizontal_scroll = 0;
             app.build_history();
@@ -353,6 +360,23 @@ fn execute_command(app: &mut App, cmd: &str) {
 
     if cmd == "q" {
         app.should_quit = true;
+    } else if let Some(sub) = cmd.strip_prefix("collect ") {
+        execute_collect(app, sub.trim());
+    } else if let Some(sub) = cmd.strip_prefix("count ") {
+        // Direct :count <pattern> — convenience alias
+        execute_collect(app, &format!("count {}", sub.trim()));
+    } else if cmd == "count" {
+        execute_collect(app, "count");
+    } else if let Some(sub) = cmd.strip_prefix("group ") {
+        execute_collect(app, &format!("group {}", sub.trim()));
+    } else if let Some(sub) = cmd.strip_prefix("topn ") {
+        execute_collect(app, &format!("topn {}", sub.trim()));
+    } else if let Some(sub) = cmd.strip_prefix("unique ") {
+        execute_collect(app, &format!("unique {}", sub.trim()));
+    } else if let Some(sub) = cmd.strip_prefix("numstats ") {
+        execute_collect(app, &format!("numstats {}", sub.trim()));
+    } else if cmd == "linestats" {
+        execute_collect(app, "linestats");
     } else if let Some(pattern) = cmd.strip_prefix("f ") {
         let resolved = resolve_pattern(&app.config, pattern);
         app.add_to_history(&resolved);
@@ -658,6 +682,83 @@ fn execute_command(app: &mut App, cmd: &str) {
         }
     } else {
         app.error_message = Some(format!("Unknown command: {}", cmd));
+    }
+}
+
+/// Parse and execute a collect sub-command.
+///
+/// Supported forms:
+///   count [pattern]
+///   group <pattern> <group_index>
+///   topn <pattern> <group_index> <n>
+///   unique <pattern> <group_index>
+///   numstats <pattern> <group_index>
+///   linestats
+fn execute_collect(app: &mut App, sub: &str) {
+    let parts: Vec<&str> = sub.splitn(2, ' ').collect();
+    let kind = parts[0];
+    let args = parts.get(1).unwrap_or(&"").trim();
+
+    let collector = match kind {
+        "count" => {
+            let pattern = if args.is_empty() { None } else { Some(args.to_string()) };
+            Some(Collector::Count { pattern })
+        }
+        "group" => {
+            let mut p = args.splitn(2, ' ');
+            let pattern = p.next().unwrap_or("").to_string();
+            let group_index: usize = p.next().unwrap_or("1").parse().unwrap_or(1);
+            if pattern.is_empty() {
+                app.error_message = Some("Usage: group <pattern> <group_index>".to_string());
+                return;
+            }
+            Some(Collector::GroupCount { pattern, group_index })
+        }
+        "topn" => {
+            let mut p = args.splitn(3, ' ');
+            let pattern = p.next().unwrap_or("").to_string();
+            let group_index: usize = p.next().unwrap_or("1").parse().unwrap_or(1);
+            let n: usize = p.next().unwrap_or("10").parse().unwrap_or(10);
+            if pattern.is_empty() {
+                app.error_message = Some("Usage: topn <pattern> <group_index> <n>".to_string());
+                return;
+            }
+            Some(Collector::TopN { pattern, group_index, n })
+        }
+        "unique" => {
+            let mut p = args.splitn(2, ' ');
+            let pattern = p.next().unwrap_or("").to_string();
+            let group_index: usize = p.next().unwrap_or("1").parse().unwrap_or(1);
+            if pattern.is_empty() {
+                app.error_message = Some("Usage: unique <pattern> <group_index>".to_string());
+                return;
+            }
+            Some(Collector::Unique { pattern, group_index })
+        }
+        "numstats" => {
+            let mut p = args.splitn(2, ' ');
+            let pattern = p.next().unwrap_or("").to_string();
+            let group_index: usize = p.next().unwrap_or("1").parse().unwrap_or(1);
+            if pattern.is_empty() {
+                app.error_message = Some("Usage: numstats <pattern> <group_index>".to_string());
+                return;
+            }
+            Some(Collector::NumericStats { pattern, group_index })
+        }
+        "linestats" => {
+            Some(Collector::LineStats)
+        }
+        _ => {
+            app.error_message = Some(format!(
+                "Unknown collect type: {}. Use: count, group, topn, unique, numstats, linestats",
+                kind
+            ));
+            return;
+        }
+    };
+
+    if let Some(c) = collector {
+        app.run_collect(c);
     }
 }
 

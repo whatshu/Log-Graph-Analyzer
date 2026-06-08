@@ -1,8 +1,10 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::Path;
 
 use log_analyzer_core::cache::CacheManager;
 use log_analyzer_core::config::Config;
+use log_analyzer_core::engine::{CollectResult, Collector};
 use log_analyzer_core::error::Result;
 use log_analyzer_core::operator::Operation;
 use log_analyzer_core::repo::{LogRepo, Workspace};
@@ -98,6 +100,11 @@ pub struct App {
     // Pending history export (node_idx, export started flag)
     pub pending_history_export: Option<usize>,
 
+    // Collect results stored by node_id
+    pub collect_results: HashMap<usize, String>,
+    pub collect_detail: Option<String>,
+    pub show_collect_detail: bool,
+
     pending_op: PendingOp,
 }
 
@@ -117,6 +124,8 @@ pub struct HistoryNode {
     pub is_head: bool,
     /// Is this node being viewed?
     pub is_viewed: bool,
+    /// Collect result summary if a collect was run at this node.
+    pub collect_summary: Option<String>,
 }
 
 /// Detect whether the terminal locale supports UTF-8 rendering.
@@ -190,6 +199,9 @@ impl App {
             terminal_width: 80, // default, updated on first render
             ascii_only: !detect_utf8_locale(),
             pending_history_export: None,
+            collect_results: HashMap::new(),
+            collect_detail: None,
+            show_collect_detail: false,
             pending_op: PendingOp::None,
         };
 
@@ -360,6 +372,8 @@ impl App {
                 // Build tree connector
                 let connector = build_connector(entry.depth, &entry.ancestors, entry.has_children, self.ascii_only);
 
+                let collect_summary = self.collect_results.get(&entry.node_id).cloned();
+
                 self.history_nodes.push(HistoryNode {
                     id: entry.node_id,
                     description: desc,
@@ -377,6 +391,7 @@ impl App {
                     branch_labels: entry.branch_labels.clone(),
                     is_head,
                     is_viewed,
+                    collect_summary,
                 });
             }
         }
@@ -887,6 +902,133 @@ impl App {
 
     pub fn page_down(&mut self) { self.scroll_down(40); }
     pub fn page_up(&mut self) { self.scroll_up(40); }
+
+    // ── Collect operations ──
+
+    /// Run a collector against the current repo state and store the result.
+    /// The result summary is associated with the current HEAD node for display
+    /// in the history view, and the full detail is shown as a popup.
+    pub fn run_collect(&mut self, collector: Collector) {
+        let node_id = {
+            let repo_ref = self.repo.borrow();
+            repo_ref
+                .as_ref()
+                .map(|r| r.head_node_id())
+                .unwrap_or(0)
+        };
+
+        let result = {
+            let mut repo_mut = self.repo.borrow_mut();
+            repo_mut
+                .as_mut()
+                .and_then(|r| r.collect(&collector).ok())
+        };
+
+        match result {
+            Some(ref r) => {
+                let summary = Self::collect_result_summary(r);
+                let detail = Self::collect_result_detail(r);
+                self.collect_results.insert(node_id, summary.clone());
+                self.collect_detail = Some(detail);
+                self.show_collect_detail = true;
+                self.status_message = format!("Collect: {}", summary);
+                // Refresh history view if we're on it
+                self.build_history();
+            }
+            None => {
+                self.error_message = Some("Collect failed".to_string());
+            }
+        }
+    }
+
+    /// Format a one-line summary of a collect result.
+    pub fn collect_result_summary(result: &CollectResult) -> String {
+        match result {
+            CollectResult::Count(n) => format!("Count: {}", n),
+            CollectResult::GroupCount(pairs) => {
+                format!("GroupCount: {} groups, top=\"{}\"×{}",
+                    pairs.len(),
+                    pairs.first().map(|(k, _)| k.as_str()).unwrap_or("—"),
+                    pairs.first().map(|(_, v)| *v).unwrap_or(0))
+            }
+            CollectResult::TopN(pairs) => {
+                format!("Top{}: {}",
+                    pairs.len(),
+                    pairs.first().map(|(k, v)| format!("\"{}\"×{}", k, v)).unwrap_or_else(|| "—".to_string()))
+            }
+            CollectResult::Unique(vals) => {
+                format!("Unique: {} values", vals.len())
+            }
+            CollectResult::NumericStats { count, min, max, avg, .. } => {
+                format!("NumStats: n={} min={:.1} max={:.1} avg={:.1}", count, min, max, avg)
+            }
+            CollectResult::LineStats { count, avg_len, max_len, min_len, .. } => {
+                format!("LineStats: n={} avg={:.1} min={} max={}", count, avg_len, min_len, max_len)
+            }
+        }
+    }
+
+    /// Format a multi-line detail display of a collect result.
+    pub fn collect_result_detail(result: &CollectResult) -> String {
+        match result {
+            CollectResult::Count(n) => {
+                format!("Count: {} lines", n)
+            }
+            CollectResult::GroupCount(pairs) => {
+                let mut s = format!("Group Count — {} groups\n\n", pairs.len());
+                s.push_str("  Count  │ Value\n");
+                s.push_str(" ────────┼──────────────────\n");
+                for (val, count) in pairs.iter().take(50) {
+                    let val_display = if val.len() > 40 {
+                        format!("{}…", &val[..39])
+                    } else {
+                        val.clone()
+                    };
+                    s.push_str(&format!("  {:>6} │ {}\n", count, val_display));
+                }
+                if pairs.len() > 50 {
+                    s.push_str(&format!("  … and {} more groups\n", pairs.len() - 50));
+                }
+                s
+            }
+            CollectResult::TopN(pairs) => {
+                let mut s = format!("Top-{} Values\n\n", pairs.len());
+                s.push_str("  Count  │ Value\n");
+                s.push_str(" ────────┼──────────────────\n");
+                for (val, count) in pairs.iter() {
+                    let val_display = if val.len() > 40 {
+                        format!("{}…", &val[..39])
+                    } else {
+                        val.clone()
+                    };
+                    s.push_str(&format!("  {:>6} │ {}\n", count, val_display));
+                }
+                s
+            }
+            CollectResult::Unique(vals) => {
+                let mut s = format!("Unique Values — {} distinct\n\n", vals.len());
+                for val in vals.iter().take(100) {
+                    s.push_str(&format!("  {}\n", val));
+                }
+                if vals.len() > 100 {
+                    s.push_str(&format!("  … and {} more\n", vals.len() - 100));
+                }
+                s
+            }
+            CollectResult::NumericStats { count, sum, min, max, avg } => {
+                format!(
+                    "Numeric Statistics\n\n  Count:  {}\n  Sum:    {:.4}\n  Min:    {:.4}\n  Max:    {:.4}\n  Avg:    {:.4}",
+                    count, sum, min, max, avg
+                )
+            }
+            CollectResult::LineStats { count, total_bytes, avg_len, max_len, min_len } => {
+                format!(
+                    "Line Statistics\n\n  Lines:       {}\n  Total Bytes: {}\n  Avg Length:  {:.1}\n  Max Length:  {}\n  Min Length:  {}",
+                    count, total_bytes, avg_len, max_len, min_len
+                )
+            }
+        }
+    }
 
     // ── Search history ──
 

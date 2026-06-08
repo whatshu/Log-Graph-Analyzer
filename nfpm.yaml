@@ -35,5 +35,5 @@ contents:
     dst: /usr/bin/la
 
 scripts:
-  postinstall: ""
+  postinstall: "__STAGING__/postinstall.sh"
   preremove: ""
