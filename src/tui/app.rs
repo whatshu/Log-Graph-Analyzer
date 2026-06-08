@@ -74,6 +74,9 @@ pub struct App {
     // Tmux
     pub in_tmux: bool,
 
+    // Terminal dimensions (updated each render)
+    pub terminal_width: u16,
+
     // Pending history export (node_idx, export started flag)
     pub pending_history_export: Option<usize>,
 
@@ -124,6 +127,7 @@ impl App {
             history_nodes: Vec::new(),
             file_browser: FileBrowser::new(Path::new(".")),
             in_tmux,
+            terminal_width: 80, // default, updated on first render
             pending_history_export: None,
             pending_op: PendingOp::None,
         };
@@ -185,24 +189,51 @@ impl App {
         let has_ops = repo_ref.as_ref().map_or(false, |r| !r.history().is_empty());
         drop(repo_ref);
 
+        // Get total_lines first, so we can clamp before reading the viewport
         if has_ops {
+            let total = {
+                let mut repo_mut = self.repo.borrow_mut();
+                repo_mut
+                    .as_mut()
+                    .map(|r| r.current_line_count().unwrap_or(0))
+                    .unwrap_or(0)
+            };
+            self.total_lines = total;
+            self.clamp_scroll_state();
+
             let mut repo_mut = self.repo.borrow_mut();
             if let Some(ref mut r) = *repo_mut {
                 self.viewport_lines = r
                     .read_current_lines(self.scroll_offset, 200)
                     .unwrap_or_default();
-                self.total_lines = r.current_line_count().unwrap_or(0);
             }
         } else {
+            self.total_lines = {
+                let repo_ref = self.repo.borrow();
+                repo_ref.as_ref().map(|r: &LogRepo| r.original_line_count()).unwrap_or(0)
+            };
+            self.clamp_scroll_state();
+
             let repo_ref = self.repo.borrow();
             if let Some(ref r) = *repo_ref {
                 self.viewport_lines = r
                     .read_original_lines(self.scroll_offset, 200)
                     .unwrap_or_default();
-                self.total_lines = r.original_line_count();
             }
         }
         self.line_count_is_original = !has_ops;
+    }
+
+    /// Clamp scroll_offset and cursor_line to the current total_lines range.
+    fn clamp_scroll_state(&mut self) {
+        if self.total_lines > 0 {
+            let max_offset = self.total_lines.saturating_sub(1);
+            self.scroll_offset = self.scroll_offset.min(max_offset);
+            self.cursor_line = self.cursor_line.min(max_offset);
+        } else {
+            self.scroll_offset = 0;
+            self.cursor_line = 0;
+        }
     }
 
     pub fn refresh_line_count(&mut self) {
@@ -631,7 +662,9 @@ impl App {
     pub fn go_to_line_end(&mut self) {
         // Find the max line length in the current viewport
         let max_len = self.viewport_lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
-        let visible_chars = 60usize; // reasonable default for content area
+        // Content width = terminal width minus line numbers (~6 chars) and borders (~2 chars)
+        let content_width = self.terminal_width.saturating_sub(8) as usize;
+        let visible_chars = content_width.max(20); // at least 20 chars
         self.horizontal_scroll = max_len.saturating_sub(visible_chars);
     }
 

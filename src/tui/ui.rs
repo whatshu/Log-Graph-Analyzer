@@ -17,7 +17,11 @@ const COLOR_ERROR: Color = Color::Red;
 const COLOR_LINE_NUMBER: Color = Color::DarkGray;
 const COLOR_DIM: Color = Color::Gray;
 
-pub fn render(f: &mut Frame, app: &App) {
+pub fn render(f: &mut Frame, app: &mut App) {
+    // Track terminal dimensions for horizontal scroll calculations
+    let area = f.area();
+    app.terminal_width = area.width;
+
     // File browser takes over the full screen
     if app.input_mode == InputMode::FileBrowser {
         render_file_browser_fullscreen(f, f.area(), app);
