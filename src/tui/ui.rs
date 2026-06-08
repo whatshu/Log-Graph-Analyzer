@@ -66,9 +66,9 @@ pub fn render(f: &mut Frame, app: &App) {
 fn render_action_bar(f: &mut Frame, area: Rect, app: &App) {
     let hints = match app.active_view {
         ViewKind::LogView => vec![
-            ("← →:ScrollH", COLOR_DIM),
+            ("← → ^ $:HScroll", COLOR_DIM),
             ("/:Search", COLOR_ACCENT),
-            ("f:Filter", COLOR_ACCENT),
+            ("f/F:Filter", COLOR_ACCENT),
             (":Cmd", COLOR_ACCENT),
             ("u:Undo", COLOR_ACCENT),
             ("i:Import", COLOR_HIGHLIGHT),
@@ -440,7 +440,14 @@ fn render_input(f: &mut Frame, area: Rect, app: &App) {
         buffer.as_str()
     };
 
-    let text = format!("{} {}", app.input_prompt, visible_buf);
+    // In search mode, render spaces as middle dots so users can spot accidental extra spaces
+    let display_buf: String = if app.input_mode == InputMode::Search {
+        visible_buf.chars().map(|c| if c == ' ' { '·' } else { c }).collect()
+    } else {
+        visible_buf.to_string()
+    };
+
+    let text = format!("{} {}", app.input_prompt, display_buf);
     let p = Paragraph::new(text).style(Style::default().fg(COLOR_FG).bg(Color::Rgb(30, 30, 30)));
     f.render_widget(p, area);
 }
@@ -454,9 +461,11 @@ fn render_help_overlay(f: &mut Frame, area: Rect, _app: &App) {
         Line::from(vec![Span::styled("  Ctrl+d/u    ", Style::default().fg(COLOR_ACCENT)), Span::raw("Page down/up")]),
         Line::from(vec![Span::styled("  gg / G      ", Style::default().fg(COLOR_ACCENT)), Span::raw("Go to first/last line")]),
         Line::from(""),
-        Line::from(vec![Span::styled("  Search & Operations ", Style::default().fg(COLOR_ACCENT))]),
+        Line::from(vec![Span::styled("  Search & Filter ", Style::default().fg(COLOR_ACCENT))]),
         Line::from(vec![Span::styled("  /            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Search (regex)")]),
         Line::from(vec![Span::styled("  n / N        ", Style::default().fg(COLOR_ACCENT)), Span::raw("Next/prev match")]),
+        Line::from(vec![Span::styled("  f / F        ", Style::default().fg(COLOR_ACCENT)), Span::raw("Filter keep/remove")]),
+        Line::from(vec![Span::styled("  R            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Replace (uses search pattern)")]),
         Line::from(vec![Span::styled("  u            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Undo last operation")]),
         Line::from(vec![Span::styled("  :            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Command mode")]),
         Line::from(""),
@@ -464,7 +473,7 @@ fn render_help_overlay(f: &mut Frame, area: Rect, _app: &App) {
         Line::from(vec![Span::styled("  l            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Log view")]),
         Line::from(vec![Span::styled("  h            ", Style::default().fg(COLOR_ACCENT)), Span::raw("History tree")]),
         Line::from(vec![Span::styled("  r            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Repo list")]),
-        Line::from(vec![Span::styled("  a            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Stats")]),
+        Line::from(vec![Span::styled("  s            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Stats")]),
         Line::from(vec![Span::styled("  i            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Import file (browser)")]),
         Line::from(vec![Span::styled("  e            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Export current state")]),
         Line::from(""),

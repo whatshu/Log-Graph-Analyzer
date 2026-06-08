@@ -69,9 +69,11 @@ pub fn normal_mode(app: &mut App, key: KeyEvent) {
                 app.queue_undo();
             }
         }
-        // Horizontal scroll (left/right arrows)
+        // Horizontal scroll
         KeyCode::Left => app.scroll_left(8),
         KeyCode::Right => app.scroll_right(8),
+        KeyCode::Char('^') => app.go_to_line_start(),
+        KeyCode::Char('$') => app.go_to_line_end(),
 
         // View switching
         KeyCode::Char('h') => {
@@ -104,6 +106,21 @@ pub fn normal_mode(app: &mut App, key: KeyEvent) {
                     keep: true,
                 });
                 app.status_message = format!("Filter keep: {}", pattern);
+            }
+        }
+
+        // F: filter-remove — inverse of f, removes matching lines
+        KeyCode::Char('F') => {
+            if app.search_query.is_empty() {
+                app.status_message = String::from("No active search — use / first");
+            } else {
+                let pattern = app.search_query.clone();
+                app.add_to_history(&pattern);
+                app.queue_operation(Operation::Filter {
+                    pattern: pattern.clone(),
+                    keep: false,
+                });
+                app.status_message = format!("Filter remove: {}", pattern);
             }
         }
 
@@ -290,6 +307,7 @@ fn execute_command(app: &mut App, cmd: &str) {
             keep: true,
         });
         app.status_message = format!("Filter keep: {}", resolved);
+        app.search_query = resolved;
     } else if let Some(pattern) = cmd.strip_prefix("fr ") {
         let resolved = resolve_pattern(&app.config, pattern);
         app.add_to_history(&resolved);
@@ -298,15 +316,19 @@ fn execute_command(app: &mut App, cmd: &str) {
             keep: false,
         });
         app.status_message = format!("Filter remove: {}", resolved);
+        app.search_query = resolved;
     } else if let Some(args) = cmd.strip_prefix("r ") {
         if let Some(inner) = parse_delimited(args, '/') {
             let parts: Vec<&str> = inner.splitn(2, '/').collect();
             if parts.len() == 2 {
+                let pattern = parts[0].to_string();
+                app.add_to_history(&pattern);
                 app.queue_operation(Operation::Replace {
-                    pattern: parts[0].to_string(),
+                    pattern: pattern.clone(),
                     replacement: parts[1].to_string(),
                 });
-                app.status_message = format!("Replace /{}/ -> {}", parts[0], parts[1]);
+                app.status_message = format!("Replace /{}/ -> {}", pattern, parts[1]);
+                app.search_query = pattern;
             } else {
                 app.error_message = Some("Invalid replace syntax. Use :r /pat/repl/".to_string());
             }

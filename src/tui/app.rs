@@ -355,6 +355,7 @@ impl App {
                 drop(repo_mut);
                 self.refresh_line_count();
                 self.load_viewport();
+                self.re_search();
             }
             PendingOp::Undo => {
                 let mut repo_mut = self.repo.borrow_mut();
@@ -376,6 +377,7 @@ impl App {
                 drop(repo_mut);
                 self.refresh_line_count();
                 self.load_viewport();
+                self.re_search();
             }
             PendingOp::CheckoutTo(node_idx) => {
                 let mut repo_mut = self.repo.borrow_mut();
@@ -413,6 +415,7 @@ impl App {
                 drop(repo_mut);
                 self.refresh_line_count();
                 self.load_viewport();
+                self.re_search();
                 self.build_history();
             }
             PendingOp::ExportFrom(node_idx, path) => {
@@ -510,6 +513,59 @@ impl App {
         }
     }
 
+    /// Re-run the current search pattern against the current line space.
+    /// Used after data-mutating operations (filter/replace/undo/checkout) to
+    /// keep search highlights and n/N navigation accurate.
+    /// Does NOT reload the viewport (caller must do that first).
+    pub fn re_search(&mut self) {
+        if self.search_query.is_empty() {
+            return;
+        }
+
+        let query = self.search_query.clone();
+        let results: Vec<usize> = {
+            let repo_ref = self.repo.borrow();
+            if repo_ref.is_none() {
+                return;
+            }
+
+            let has_ops =
+                repo_ref
+                    .as_ref()
+                    .map_or(false, |r: &LogRepo| !r.history().is_empty());
+            if has_ops {
+                drop(repo_ref);
+                let mut repo_mut = self.repo.borrow_mut();
+                if let Some(ref mut r) = *repo_mut {
+                    let lines = r.get_current_lines().unwrap_or_default();
+                    match regex::Regex::new(&query) {
+                        Ok(re) => lines
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, line)| re.is_match(line))
+                            .take(10_000)
+                            .map(|(i, _)| i)
+                            .collect(),
+                        Err(_) => Vec::new(),
+                    }
+                } else {
+                    Vec::new()
+                }
+            } else {
+                let r = repo_ref.as_ref().unwrap();
+                let proc = r.processor();
+                proc.parallel_search(&query, 10_000)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|(idx, _)| *idx)
+                    .collect()
+            }
+        };
+
+        self.search_results = results;
+        self.search_index = 0;
+    }
+
     pub fn next_match(&mut self) {
         if self.search_results.is_empty() { return; }
         self.search_index = (self.search_index + 1) % self.search_results.len();
@@ -566,6 +622,17 @@ impl App {
     }
     pub fn scroll_left(&mut self, n: usize) {
         self.horizontal_scroll = self.horizontal_scroll.saturating_sub(n);
+    }
+    /// Go to line start (horizontal 0), like vim `0`.
+    pub fn go_to_line_start(&mut self) {
+        self.horizontal_scroll = 0;
+    }
+    /// Go to line end (max horizontal scroll), like vim `$`.
+    pub fn go_to_line_end(&mut self) {
+        // Find the max line length in the current viewport
+        let max_len = self.viewport_lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+        let visible_chars = 60usize; // reasonable default for content area
+        self.horizontal_scroll = max_len.saturating_sub(visible_chars);
     }
 
     pub fn page_down(&mut self) { self.scroll_down(40); }

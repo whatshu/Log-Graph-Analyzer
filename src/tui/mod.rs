@@ -81,6 +81,17 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    // If help overlay is showing, close it on q, Esc, or ?
+    if app.show_help {
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('?') => {
+                app.show_help = false;
+                return;
+            }
+            _ => {}
+        }
+    }
+
     // Esc behavior: in file browser, cancel; otherwise clear input modes
     if key.code == KeyCode::Esc {
         match app.input_mode {
