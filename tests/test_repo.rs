@@ -548,3 +548,214 @@ fn test_append_metadata_updated() {
     assert_eq!(repo.metadata.original_size, size_before + data2.len() as u64);
     assert_eq!(repo.metadata.original_line_count, 2);
 }
+
+// ── Branch operation tests ──
+
+#[test]
+fn test_branch_create_and_checkout() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path().join("repo");
+
+    let data = b"a\nb\nc\nd\ne\n";
+    let mut repo =
+        LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
+
+    // Apply a filter operation first (creates node 1)
+    repo.apply_operation(Operation::Filter {
+        pattern: "[ace]".to_string(),
+        keep: true,
+    })
+    .unwrap();
+    assert_eq!(repo.current_line_count().unwrap(), 3);
+
+    // Create a new branch at node 0 (root)
+    let created = repo.create_branch("experiment", 0).unwrap();
+    assert!(created);
+
+    // Checkout to the new branch
+    repo.checkout_branch("experiment").unwrap();
+    assert_eq!(repo.current_branch(), "experiment");
+    // experiment branch HEAD is at node 0 (root) — all original lines
+    assert_eq!(repo.current_line_count().unwrap(), 5);
+}
+
+#[test]
+fn test_branch_names_and_head() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path().join("repo");
+
+    let data = b"line1\nline2\nline3\n";
+    let mut repo =
+        LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
+
+    // Initially only "main" exists
+    let names = repo.branch_names();
+    assert!(names.contains(&"main"));
+    assert_eq!(repo.current_branch(), "main");
+
+    // Head should be at root (node 0)
+    assert_eq!(repo.head_node_id(), 0);
+
+    // Create branch at root
+    repo.create_branch("alt", 0).unwrap();
+    let names = repo.branch_names();
+    assert!(names.contains(&"alt"));
+    assert_eq!(repo.branch_head_node_id("alt"), Some(0));
+}
+
+#[test]
+fn test_branch_delete() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path().join("repo");
+
+    let data = b"a\nb\nc\n";
+    let mut repo =
+        LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
+
+    repo.create_branch("temp", 0).unwrap();
+    assert!(repo.branch_names().contains(&"temp"));
+
+    // Switch away first
+    repo.checkout_branch("temp").unwrap();
+    repo.checkout_branch("main").unwrap();
+
+    let deleted = repo.delete_branch("temp").unwrap();
+    assert!(deleted);
+    assert!(!repo.branch_names().contains(&"temp"));
+}
+
+#[test]
+fn test_branch_cannot_delete_main() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path().join("repo");
+
+    let data = b"a\nb\nc\n";
+    let mut repo =
+        LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
+
+    let deleted = repo.delete_branch("main").unwrap();
+    assert!(!deleted);
+}
+
+#[test]
+fn test_view_node() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path().join("repo");
+
+    let data = b"a\nb\nc\nd\ne\n";
+    let mut repo =
+        LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
+
+    // Apply filter
+    repo.apply_operation(Operation::Filter {
+        pattern: "[ace]".to_string(),
+        keep: true,
+    })
+    .unwrap();
+
+    // View root node (original state) — non-destructive
+    let root_lines = repo.view_node(0).unwrap();
+    assert_eq!(root_lines.len(), 5);
+    assert_eq!(root_lines, vec!["a", "b", "c", "d", "e"]);
+
+    // Current branch HEAD should still be node 1 (filtered state)
+    assert_eq!(repo.head_node_id(), 1);
+    assert_eq!(repo.current_line_count().unwrap(), 3);
+}
+
+#[test]
+fn test_branch_from() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path().join("repo");
+
+    let data = b"INFO a\nERROR b\nINFO c\nERROR d\n";
+    let mut repo =
+        LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
+
+    // Apply a filter on main
+    repo.apply_operation(Operation::Filter {
+        pattern: "ERROR".to_string(),
+        keep: true,
+    })
+    .unwrap();
+    assert_eq!(repo.current_line_count().unwrap(), 2);
+
+    // Branch from root (node 0) with a different operation
+    repo.branch_from("info_only", 0).unwrap();
+    assert_eq!(repo.current_branch(), "info_only");
+    assert_eq!(repo.current_line_count().unwrap(), 4); // root state
+
+    // Apply different filter on new branch
+    repo.apply_operation(Operation::Filter {
+        pattern: "INFO".to_string(),
+        keep: true,
+    })
+    .unwrap();
+    assert_eq!(repo.current_line_count().unwrap(), 2);
+
+    // Switch back to main — it should still have ERROR filter applied
+    repo.checkout_branch("main").unwrap();
+    let main_lines = repo.get_current_lines().unwrap();
+    assert!(main_lines.iter().all(|l| l.contains("ERROR")));
+}
+
+#[test]
+fn test_collect_original() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path().join("repo");
+
+    let data = b"INFO ok\nERROR fail\nINFO ok2\nERROR oops\n";
+    let mut repo =
+        LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
+
+    // Apply filter to only keep ERROR lines
+    repo.apply_operation(Operation::Filter {
+        pattern: "ERROR".to_string(),
+        keep: true,
+    })
+    .unwrap();
+
+    // Current state has 2 lines (only ERROR)
+    assert_eq!(repo.current_line_count().unwrap(), 2);
+
+    // collect_original should see all 4 lines
+    use log_analyzer_core::engine::{CollectResult, Collector};
+    let result = repo
+        .collect_original(&Collector::Count { pattern: None })
+        .unwrap();
+    assert!(matches!(result, CollectResult::Count(4)));
+
+    // Current state collector should see 2 lines
+    let current_result = repo
+        .collect(&Collector::Count { pattern: None })
+        .unwrap();
+    assert!(matches!(current_result, CollectResult::Count(2)));
+}
+
+#[test]
+fn test_history_tree_node_count() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path().join("repo");
+
+    let data = b"a\nb\nc\n";
+    let mut repo =
+        LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
+
+    assert_eq!(repo.history_tree().len(), 1); // just root
+    assert!(repo.history_tree().is_empty());
+
+    repo.apply_operation(Operation::Filter {
+        pattern: "a".to_string(),
+        keep: true,
+    })
+    .unwrap();
+    assert_eq!(repo.history_tree().len(), 2);
+    assert!(!repo.history_tree().is_empty());
+
+    repo.apply_operation(Operation::Replace {
+        pattern: "a".to_string(),
+        replacement: "X".to_string(),
+    })
+    .unwrap();
+    assert_eq!(repo.history_tree().len(), 3);
+}

@@ -4,7 +4,7 @@ mod processor;
 mod stream;
 
 pub use collector::{CollectResult, Collector};
-pub use processor::ChunkedProcessor;
+pub use processor::{ChunkedProcessor, LogStats};
 pub use stream::{LineStream, ProcessedChunk};
 
 use crate::error::Result;

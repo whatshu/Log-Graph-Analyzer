@@ -265,3 +265,146 @@ class TestErrorCases:
     def test_unknown_command(self, runner, ws):
         r = runner.invoke(main, ["nonexistent_cmd", "-w", ws])
         assert r.exit_code != 0
+
+
+# ── Branch subcommand tests ──
+
+
+class TestBranchList:
+    def test_branch_list(self, runner, ws_repo):
+        r = runner.invoke(main, ["branch", "list", "-w", ws_repo, "--repo", "test"])
+        assert r.exit_code == 0
+        assert "main" in r.output
+
+    def test_branch_list_no_repo(self, runner, ws):
+        r = runner.invoke(main, ["branch", "list", "-w", ws, "--repo", "nonexistent"])
+        assert r.exit_code != 0
+
+
+class TestBranchCheckout:
+    def test_branch_checkout_main(self, runner, ws_repo):
+        r = runner.invoke(main, ["branch", "checkout", "main", "-w", ws_repo, "--repo", "test"])
+        assert r.exit_code == 0
+        assert "main" in r.output
+
+
+class TestBranchCreate:
+    def test_branch_create(self, runner, ws_repo):
+        r = runner.invoke(main, ["branch", "create", "experiment", "-w", ws_repo, "--repo", "test"])
+        assert r.exit_code == 0
+        assert "experiment" in r.output
+
+        # Verify it appears in list
+        lr = runner.invoke(main, ["branch", "list", "-w", ws_repo, "--repo", "test"])
+        assert "experiment" in lr.output
+
+    def test_branch_create_duplicate_fails(self, runner, ws_repo):
+        runner.invoke(main, ["branch", "create", "dup", "-w", ws_repo, "--repo", "test"])
+        r = runner.invoke(main, ["branch", "create", "dup", "-w", ws_repo, "--repo", "test"])
+        assert "already exists" in r.output
+
+
+class TestBranchDelete:
+    def test_branch_delete(self, runner, ws_repo):
+        runner.invoke(main, ["branch", "create", "to_del", "-w", ws_repo, "--repo", "test"])
+        r = runner.invoke(
+            main, ["branch", "delete", "to_del", "-w", ws_repo, "--repo", "test", "--yes"]
+        )
+        assert r.exit_code == 0
+        assert "deleted" in r.output
+
+    def test_branch_delete_main_fails(self, runner, ws_repo):
+        r = runner.invoke(
+            main, ["branch", "delete", "main", "-w", ws_repo, "--repo", "test", "--yes"]
+        )
+        assert "Cannot delete 'main'" in r.output
+
+
+# ── Stats subcommand tests ──
+
+
+class TestStatsOverview:
+    def test_stats_overview(self, runner, ws_repo):
+        r = runner.invoke(main, ["stats", "overview", "-w", ws_repo, "--repo", "test"])
+        assert r.exit_code == 0
+        assert "Total Lines" in r.output
+
+
+class TestStatsCount:
+    def test_stats_count_all(self, runner, ws_repo):
+        r = runner.invoke(main, ["stats", "count", "-w", ws_repo, "--repo", "test"])
+        assert r.exit_code == 0
+        assert "100" in r.output
+
+    def test_stats_count_pattern(self, runner, ws_repo):
+        r = runner.invoke(main, ["stats", "count", "ERROR", "-w", ws_repo, "--repo", "test"])
+        assert r.exit_code == 0
+        assert "25" in r.output
+
+
+class TestStatsGroupCount:
+    def test_stats_group_count(self, runner, ws_repo):
+        r = runner.invoke(
+            main,
+            ["stats", "group-count", r"(INFO|WARN|ERROR|DEBUG)", "-w", ws_repo, "--repo", "test"],
+        )
+        assert r.exit_code == 0
+        assert "INFO" in r.output
+        assert "ERROR" in r.output
+
+
+class TestStatsTop:
+    def test_stats_top(self, runner, ws_repo):
+        r = runner.invoke(
+            main,
+            ["stats", "top", r"(INFO|WARN|ERROR|DEBUG)", "-w", ws_repo, "--repo", "test", "-n", "4"],
+        )
+        assert r.exit_code == 0
+        assert "25" in r.output
+
+
+class TestStatsDistinct:
+    def test_stats_distinct(self, runner, ws_repo):
+        r = runner.invoke(
+            main,
+            ["stats", "distinct", r"(INFO|WARN|ERROR|DEBUG)", "-w", ws_repo, "--repo", "test"],
+        )
+        assert r.exit_code == 0
+        assert "4" in r.output
+
+
+class TestStatsNumbers:
+    def test_stats_numbers(self, runner, ws_repo):
+        r = runner.invoke(
+            main,
+            [
+                "stats", "numbers",
+                r"message (\d+)", "-g", "1",
+                "-w", ws_repo, "--repo", "test",
+            ],
+        )
+        assert r.exit_code == 0
+        assert "Count" in r.output
+
+
+# ── Search-file tests ──
+
+
+class TestSearchFile:
+    def test_search_file(self, runner, sample_log):
+        r = runner.invoke(main, ["search-file", sample_log, "ERROR"])
+        assert r.exit_code == 0
+        assert "ERROR" in r.output
+        assert "match" in r.output.lower()
+
+
+# ── Enhanced info tests ──
+
+
+class TestInfoWithBranches:
+    def test_info_shows_branches(self, runner, ws_repo):
+        r = runner.invoke(main, ["info", "-w", ws_repo, "--repo", "test"])
+        assert r.exit_code == 0
+        assert "main" in r.output
+        assert "Current Branch" in r.output
+        assert "Branches" in r.output

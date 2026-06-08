@@ -164,6 +164,99 @@ impl PyLogRepo {
         self.inner.path().to_string_lossy().to_string()
     }
 
+    // ── Branch management ──
+
+    /// View (non-destructive checkout) a specific history node.
+    /// Returns lines at that node without changing any branch HEAD.
+    fn view_node(&self, node_id: usize) -> PyResult<Vec<String>> {
+        Ok(self.inner.view_node(node_id)?)
+    }
+
+    /// Switch to a named branch.
+    fn checkout_branch(&mut self, name: &str) -> PyResult<()> {
+        Ok(self.inner.checkout_branch(name)?)
+    }
+
+    /// Create a new branch at a given node. Returns true if created.
+    fn create_branch(&mut self, name: &str, at_node_id: usize) -> PyResult<bool> {
+        Ok(self.inner.create_branch(name, at_node_id)?)
+    }
+
+    /// Delete a named branch. Cannot delete "main" or the current branch.
+    fn delete_branch(&mut self, name: &str) -> PyResult<bool> {
+        Ok(self.inner.delete_branch(name)?)
+    }
+
+    /// Create a branch from a node and switch to it.
+    fn branch_from(&mut self, branch_name: &str, from_node_id: usize) -> PyResult<()> {
+        Ok(self.inner.branch_from(branch_name, from_node_id)?)
+    }
+
+    /// List all branch names.
+    fn branch_names(&self) -> Vec<String> {
+        self.inner.branch_names().into_iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Get the current branch name.
+    fn current_branch_name(&self) -> String {
+        self.inner.current_branch().to_string()
+    }
+
+    /// Get the HEAD node ID of current branch.
+    fn head_node_id(&self) -> usize {
+        self.inner.head_node_id()
+    }
+
+    /// Get the HEAD node ID for a specific branch.
+    fn branch_head_node_id(&self, name: &str) -> Option<usize> {
+        self.inner.branch_head_node_id(name)
+    }
+
+    /// Apply a filter operation from a specific history node (branch off).
+    /// `keep=True` keeps matching lines.
+    fn filter_from(
+        &mut self,
+        from_node_id: usize,
+        branch_name: &str,
+        pattern: &str,
+        keep: bool,
+    ) -> PyResult<()> {
+        let op = Operation::Filter {
+            pattern: pattern.to_string(),
+            keep,
+        };
+        self.inner
+            .apply_operation_from(from_node_id, branch_name, op)?;
+        Ok(())
+    }
+
+    /// Apply a replace operation from a specific history node (branch off).
+    fn replace_from(
+        &mut self,
+        from_node_id: usize,
+        branch_name: &str,
+        pattern: &str,
+        replacement: &str,
+    ) -> PyResult<()> {
+        let op = Operation::Replace {
+            pattern: pattern.to_string(),
+            replacement: replacement.to_string(),
+        };
+        self.inner
+            .apply_operation_from(from_node_id, branch_name, op)?;
+        Ok(())
+    }
+
+    /// Get the total number of nodes in the history tree.
+    fn history_tree_node_count(&self) -> usize {
+        self.inner.history_tree().len()
+    }
+
+    /// Check whether the history tree is empty (no operations applied).
+    fn history_is_empty(&self) -> bool {
+        self.inner.history_tree().is_empty()
+    }
+
     // --- Streaming engine methods (memory-efficient for large files) ---
 
     /// Count lines matching a regex in the original data.
@@ -375,6 +468,134 @@ impl PyLogRepo {
     fn collect_line_stats<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let c = Collector::LineStats;
         match self.inner.collect(&c)? {
+            CollectResult::LineStats {
+                count,
+                total_bytes,
+                avg_len,
+                max_len,
+                min_len,
+            } => {
+                let dict = PyDict::new(py);
+                dict.set_item("count", count)?;
+                dict.set_item("total_bytes", total_bytes)?;
+                dict.set_item("avg_len", avg_len)?;
+                dict.set_item("max_len", max_len)?;
+                dict.set_item("min_len", min_len)?;
+                Ok(dict)
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    // --- Collector methods on original data (ignore operations) ---
+
+    /// Run a collector on the original data, ignoring any applied operations.
+    /// Count lines, optionally filtered by a regex.
+    fn collect_original_count(&self, pattern: Option<&str>) -> PyResult<usize> {
+        let c = Collector::Count {
+            pattern: pattern.map(|s| s.to_string()),
+        };
+        match self.inner.collect_original(&c)? {
+            CollectResult::Count(n) => Ok(n),
+            _ => unreachable!(),
+        }
+    }
+
+    /// Group original lines by a regex capture group, return {group_value: count}.
+    fn collect_original_group_count<'py>(
+        &self,
+        py: Python<'py>,
+        pattern: &str,
+        group_index: usize,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let c = Collector::GroupCount {
+            pattern: pattern.to_string(),
+            group_index,
+        };
+        match self.inner.collect_original(&c)? {
+            CollectResult::GroupCount(pairs) => {
+                let dict = PyDict::new(py);
+                for (k, v) in pairs {
+                    dict.set_item(k, v)?;
+                }
+                Ok(dict)
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// Top-N most frequent values of a capture group in original data.
+    fn collect_original_top_n(
+        &self,
+        pattern: &str,
+        group_index: usize,
+        n: usize,
+    ) -> PyResult<Vec<(String, usize)>> {
+        let c = Collector::TopN {
+            pattern: pattern.to_string(),
+            group_index,
+            n,
+        };
+        match self.inner.collect_original(&c)? {
+            CollectResult::TopN(pairs) => Ok(pairs),
+            _ => unreachable!(),
+        }
+    }
+
+    /// Distinct values of a capture group in original data.
+    fn collect_original_unique(
+        &self,
+        pattern: &str,
+        group_index: usize,
+    ) -> PyResult<Vec<String>> {
+        let c = Collector::Unique {
+            pattern: pattern.to_string(),
+            group_index,
+        };
+        match self.inner.collect_original(&c)? {
+            CollectResult::Unique(vals) => Ok(vals),
+            _ => unreachable!(),
+        }
+    }
+
+    /// Numeric statistics from a capture group in original data.
+    fn collect_original_numeric_stats<'py>(
+        &self,
+        py: Python<'py>,
+        pattern: &str,
+        group_index: usize,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let c = Collector::NumericStats {
+            pattern: pattern.to_string(),
+            group_index,
+        };
+        match self.inner.collect_original(&c)? {
+            CollectResult::NumericStats {
+                count,
+                sum,
+                min,
+                max,
+                avg,
+            } => {
+                let dict = PyDict::new(py);
+                dict.set_item("count", count)?;
+                dict.set_item("sum", sum)?;
+                dict.set_item("min", min)?;
+                dict.set_item("max", max)?;
+                dict.set_item("avg", avg)?;
+                Ok(dict)
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// Line-length statistics over original data.
+    fn collect_original_line_stats<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let c = Collector::LineStats;
+        match self.inner.collect_original(&c)? {
             CollectResult::LineStats {
                 count,
                 total_bytes,

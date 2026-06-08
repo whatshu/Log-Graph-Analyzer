@@ -7,7 +7,7 @@ import click
 from rich.console import Console
 from rich.table import Table
 
-from log_analyzer._core import Workspace
+from log_analyzer._core import LogRepo, Workspace
 
 console = Console()
 
