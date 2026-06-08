@@ -4,12 +4,20 @@ version = "0.1.0"
 edition = "2021"
 description = "High-performance log analysis engine with compressed storage and reversible operations"
 
+[features]
+default = ["python-bindings"]
+python-bindings = ["pyo3/extension-module"]
+
 [lib]
 name = "log_analyzer_core"
 crate-type = ["cdylib", "rlib"]
 
+[[bin]]
+name = "la"
+path = "src/main.rs"
+
 [dependencies]
-pyo3 = { version = "0.28", features = ["extension-module"] }
+pyo3 = { version = "0.28" }
 rayon = "1.10"
 zstd = "0.13"
 regex = "1"
@@ -24,6 +32,8 @@ chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
 crossbeam-channel = "0.5"
 parking_lot = "0.12"
+ratatui = "0.29"
+crossterm = "0.28"
 
 [dev-dependencies]
 tempfile = "3"

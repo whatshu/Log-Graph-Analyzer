@@ -1,0 +1,248 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── TUI binary: Linux (glibc + musl) ──────────────────────────────
+  build-linux-tui:
+    name: TUI ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilation deps
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Install musl tools
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: Build TUI binary
+        run: cargo build --bin la --no-default-features --release --target ${{ matrix.target }}
+
+      - name: Package (tar.gz)
+        shell: bash
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czf la-${{ matrix.target }}.tar.gz la
+          sha256sum la-${{ matrix.target }}.tar.gz > la-${{ matrix.target }}.tar.gz.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: la-${{ matrix.target }}
+          path: |
+            target/${{ matrix.target }}/release/la-*.tar.gz
+            target/${{ matrix.target }}/release/la-*.tar.gz.sha256
+
+  # ── TUI binary: macOS ────────────────────────────────────────────
+  build-macos-tui:
+    name: TUI ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            os: macos-13
+          - target: aarch64-apple-darwin
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build TUI binary
+        run: cargo build --bin la --no-default-features --release --target ${{ matrix.target }}
+
+      - name: Package (tar.gz)
+        shell: bash
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czf la-${{ matrix.target }}.tar.gz la
+          sha256sum la-${{ matrix.target }}.tar.gz > la-${{ matrix.target }}.tar.gz.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: la-${{ matrix.target }}
+          path: |
+            target/${{ matrix.target }}/release/la-*.tar.gz
+            target/${{ matrix.target }}/release/la-*.tar.gz.sha256
+
+  # ── TUI binary: Windows ──────────────────────────────────────────
+  build-windows-tui:
+    name: TUI x86_64-pc-windows-msvc
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build TUI binary
+        run: cargo build --bin la --no-default-features --release
+
+      - name: Package (zip)
+        shell: pwsh
+        run: |
+          $dst = "la-x86_64-pc-windows-msvc.zip"
+          Compress-Archive -Path target/release/la.exe -DestinationPath $dst
+          (Get-FileHash $dst -Algorithm SHA256).Hash + "  " + $dst | Out-File -Encoding ascii "$dst.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: la-x86_64-pc-windows-msvc
+          path: |
+            la-x86_64-pc-windows-msvc.zip
+            la-x86_64-pc-windows-msvc.zip.sha256
+
+  # ── Python wheels (all platforms) ────────────────────────────────
+  build-wheels:
+    name: Wheel (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          args: --release --features python-bindings --out dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: dist/*.whl
+
+  # ── System packages: deb + rpm (Linux only) ─────────────────────
+  build-linux-pkg:
+    name: deb + rpm (x86_64)
+    needs: [build-linux-tui]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build Python wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          args: --release --features python-bindings --out dist
+
+      - name: Download TUI binary
+        uses: actions/download-artifact@v4
+        with:
+          name: la-x86_64-unknown-linux-gnu
+
+      - name: Extract TUI binary
+        run: |
+          tar xzf la-x86_64-unknown-linux-gnu.tar.gz -C target/release/
+          chmod +x target/release/la
+
+      - name: Install nfpm
+        run: |
+          curl -fsSL https://github.com/goreleaser/nfpm/releases/download/v2.41.1/nfpm_2.41.1_linux_x86_64.tar.gz | tar xz -C /usr/local/bin nfpm
+
+      - name: Build deb + rpm
+        run: |
+          WHEEL=$(ls dist/*.whl | head -1)
+          STAGING=$(mktemp -d)
+          VENV="$STAGING/opt/log-analyzer"
+
+          python3 -m venv "$VENV"
+          "$VENV/bin/pip" install --quiet --upgrade pip
+          "$VENV/bin/pip" install --quiet "$WHEEL"
+
+          # CLI wrapper
+          mkdir -p "$STAGING/usr/bin"
+          cat > "$STAGING/usr/bin/log-analyzer" <<'EOF'
+          #!/bin/sh
+          exec /opt/log-analyzer/bin/python -m log_analyzer.cli "$@"
+          EOF
+          chmod +x "$STAGING/usr/bin/log-analyzer"
+
+          # TUI binary
+          cp target/release/la "$STAGING/usr/bin/la"
+
+          # Generate nfpm config
+          VERSION="${GITHUB_REF_NAME#v}"
+          ARCH=$(uname -m)
+          sed -e "s|__VERSION__|${VERSION}|g" \
+              -e "s|__ARCH__|${ARCH}|g" \
+              -e "s|__STAGING__|${STAGING}|g" \
+              nfpm.yaml > "$STAGING/nfpm.yaml"
+
+          mkdir -p dist
+          nfpm pkg -f "$STAGING/nfpm.yaml" -p deb -t dist/
+          nfpm pkg -f "$STAGING/nfpm.yaml" -p rpm -t dist/
+
+          rm -rf "$STAGING"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: |
+            dist/*.deb
+            dist/*.rpm
+
+  # ── GitHub Release ──────────────────────────────────────────────
+  github-release:
+    name: Create Release
+    needs: [build-linux-tui, build-macos-tui, build-windows-tui, build-wheels, build-linux-pkg]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten artifact directory
+        run: |
+          mkdir -p release
+          find artifacts -type f | while read f; do
+            cp "$f" release/
+          done
+          ls -la release/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          files: release/*
+          generate_release_notes: true

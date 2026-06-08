@@ -4,7 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT_DIR"
 
-VERSION="0.1.0"
+# Read version from Cargo.toml
+VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
 
 # ---------- helpers ----------
 info()  { printf '\033[1;34m[INFO]\033[0m  %s\n' "$*"; }
@@ -216,6 +217,15 @@ do_pkg() {
 exec /opt/log-analyzer/bin/python -m log_analyzer.cli "$@"
 WRAPPER
     chmod +x "$staging/usr/bin/log-analyzer"
+
+    # Step 3b: include TUI binary if it was built
+    local la_bin="$ROOT_DIR/target/release/la"
+    if [[ -x "$la_bin" ]]; then
+        info "Including TUI binary (la) in package..."
+        cp "$la_bin" "$staging/usr/bin/la"
+    else
+        info "TUI binary not found (build with: cargo build --bin la --no-default-features --release) — skipping."
+    fi
 
     # Step 4: generate nfpm config from template
     ensure_nfpm || { err "Cannot build packages without nfpm"; rm -rf "$staging"; return 1; }

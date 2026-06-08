@@ -1,4 +1,6 @@
+#[cfg(feature = "python-bindings")]
 use pyo3::exceptions::PyRuntimeError;
+#[cfg(feature = "python-bindings")]
 use pyo3::PyErr;
 use thiserror::Error;
 
@@ -29,6 +31,7 @@ pub enum LogAnalyzerError {
     Compression(String),
 }
 
+#[cfg(feature = "python-bindings")]
 impl From<LogAnalyzerError> for PyErr {
     fn from(err: LogAnalyzerError) -> PyErr {
         PyRuntimeError::new_err(err.to_string())

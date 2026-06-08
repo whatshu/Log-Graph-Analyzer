@@ -24,7 +24,7 @@ dev = [
 [tool.maturin]
 python-source = "python"
 module-name = "log_analyzer._core"
-features = ["pyo3/extension-module"]
+features = ["python-bindings"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

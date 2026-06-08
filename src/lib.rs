@@ -4,10 +4,13 @@ pub mod index;
 pub mod operator;
 pub mod repo;
 
+#[cfg(feature = "python-bindings")]
 mod bindings;
 
+#[cfg(feature = "python-bindings")]
 use pyo3::prelude::*;
 
+#[cfg(feature = "python-bindings")]
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<bindings::PyLogRepo>()?;

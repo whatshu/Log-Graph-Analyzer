@@ -26,9 +26,13 @@ contents:
     dst: /opt/log-analyzer/
     type: tree
 
-  # CLI entry point symlink
+  # CLI entry point wrapper
   - src: __STAGING__/usr/bin/log-analyzer
     dst: /usr/bin/log-analyzer
+
+  # TUI binary
+  - src: __STAGING__/usr/bin/la
+    dst: /usr/bin/la
 
 scripts:
   postinstall: ""
