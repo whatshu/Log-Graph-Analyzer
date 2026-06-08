@@ -448,14 +448,14 @@ do_ci() {
         fi
     done
 
-    # ---- System packages (deb + rpm) ----
-    info "Building system packages..."
-    do_pkg "$WHEEL"   # reuse already-built native wheel; no second compile
-
-    # ---- Build native TUI binary ----
+    # ---- Build native TUI binary (before do_pkg so it can be included) ----
     info "Building native TUI binary..."
     cargo build --bin lga --no-default-features --release
     ok "TUI binary built"
+
+    # ---- System packages (deb + rpm) ----
+    info "Building system packages..."
+    do_pkg "$WHEEL"   # reuse already-built native wheel; no second compile
 
     # ---- Detect platform ----
     local NATIVE_OS NATIVE_ARCH PLATFORM
