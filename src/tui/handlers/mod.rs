@@ -98,6 +98,7 @@ pub fn normal_mode(app: &mut App, key: KeyEvent) {
                 app.status_message = String::from("No active search — use / first");
             } else {
                 let pattern = app.search_query.clone();
+                app.add_to_history(&pattern);
                 app.queue_operation(Operation::Filter {
                     pattern: pattern.clone(),
                     keep: true,
@@ -181,12 +182,32 @@ pub fn search_mode(app: &mut App, key: KeyEvent) {
             let query = app.input_buffer.clone();
             app.input_buffer.clear();
             app.input_mode = InputMode::Normal;
+            app.history_reset();
             if !query.is_empty() {
+                app.add_to_history(&query);
                 app.do_search(&query);
             }
         }
-        KeyCode::Char(c) => app.input_buffer.push(c),
-        KeyCode::Backspace => { app.input_buffer.pop(); }
+        KeyCode::Up => {
+            // Navigate search history (up = older)
+            if let Some(term) = app.history_navigate_up() {
+                app.input_buffer = term.to_string();
+            }
+        }
+        KeyCode::Down => {
+            // Navigate search history (down = newer)
+            if let Some(term) = app.history_navigate_down() {
+                app.input_buffer = term.to_string();
+            }
+        }
+        KeyCode::Char(c) => {
+            app.history_reset();
+            app.input_buffer.push(c);
+        }
+        KeyCode::Backspace => {
+            app.history_reset();
+            app.input_buffer.pop();
+        }
         _ => {}
     }
 }
@@ -263,6 +284,7 @@ fn execute_command(app: &mut App, cmd: &str) {
         app.should_quit = true;
     } else if let Some(pattern) = cmd.strip_prefix("f ") {
         let resolved = resolve_pattern(&app.config, pattern);
+        app.add_to_history(&resolved);
         app.queue_operation(Operation::Filter {
             pattern: resolved.clone(),
             keep: true,
@@ -270,6 +292,7 @@ fn execute_command(app: &mut App, cmd: &str) {
         app.status_message = format!("Filter keep: {}", resolved);
     } else if let Some(pattern) = cmd.strip_prefix("fr ") {
         let resolved = resolve_pattern(&app.config, pattern);
+        app.add_to_history(&resolved);
         app.queue_operation(Operation::Filter {
             pattern: resolved.clone(),
             keep: false,
@@ -359,8 +382,8 @@ fn parse_delimited(s: &str, delim: char) -> Option<&str> {
 
 fn handle_input(app: &mut App, prompt: &str, input: &str) {
     if prompt.starts_with("Replace /") {
-        // Replace: pattern is the current search query, input is replacement
         let pattern = app.search_query.clone();
+        app.add_to_history(&pattern);
         app.queue_operation(Operation::Replace {
             pattern: pattern.clone(),
             replacement: input.to_string(),

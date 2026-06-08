@@ -15,3 +15,4 @@ log/
 # Large test / benchmark log files — never commit these
 *.log
 benchmark_*.log
+.log_analyzer/search_history.json

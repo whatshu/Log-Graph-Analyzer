@@ -52,6 +52,10 @@ pub struct App {
     pub search_query: String,
     pub search_results: Vec<usize>,
     pub search_index: usize,
+    /// Search/filter history (most recent first, max 100).
+    pub search_history: Vec<String>,
+    /// Current position in history navigation (-1 = not navigating).
+    pub search_history_idx: isize,
     pub input_mode: InputMode,
     pub input_buffer: String,
     pub input_prompt: String,
@@ -107,6 +111,8 @@ impl App {
             search_query: String::new(),
             search_results: Vec::new(),
             search_index: 0,
+            search_history: Self::load_search_history(),
+            search_history_idx: -1,
             input_mode: InputMode::Normal,
             input_buffer: String::new(),
             input_prompt: String::new(),
@@ -564,6 +570,68 @@ impl App {
 
     pub fn page_down(&mut self) { self.scroll_down(40); }
     pub fn page_up(&mut self) { self.scroll_up(40); }
+
+    // ── Search history ──
+
+    fn history_path() -> std::path::PathBuf {
+        std::path::PathBuf::from(".log_analyzer").join("search_history.json")
+    }
+
+    fn load_search_history() -> Vec<String> {
+        let path = Self::history_path();
+        if let Ok(data) = std::fs::read_to_string(&path) {
+            if let Ok(list) = serde_json::from_str::<Vec<String>>(&data) {
+                return list.into_iter().take(100).collect();
+            }
+        }
+        Vec::new()
+    }
+
+    fn save_search_history(&self) {
+        let path = Self::history_path();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let json = serde_json::to_string(&self.search_history).unwrap_or_default();
+        let _ = std::fs::write(&path, json);
+    }
+
+    /// Add a search term to history (dedup, most recent first, capped at 100).
+    pub fn add_to_history(&mut self, term: &str) {
+        let term = term.trim().to_string();
+        if term.is_empty() {
+            return;
+        }
+        self.search_history.retain(|t| t != &term);
+        self.search_history.insert(0, term);
+        self.search_history.truncate(100);
+        self.save_search_history();
+    }
+
+    /// Step up/back in search history. Returns the term to fill in.
+    pub fn history_navigate_up(&mut self) -> Option<&str> {
+        if self.search_history.is_empty() {
+            return None;
+        }
+        let next = (self.search_history_idx + 1).min(self.search_history.len() as isize - 1);
+        self.search_history_idx = next;
+        self.search_history.get(next as usize).map(|s| s.as_str())
+    }
+
+    /// Step down/forward in search history. Returns the term or empty.
+    pub fn history_navigate_down(&mut self) -> Option<&str> {
+        if self.search_history_idx <= 0 {
+            self.search_history_idx = -1;
+            return Some("");
+        }
+        self.search_history_idx -= 1;
+        self.search_history.get(self.search_history_idx as usize).map(|s| s.as_str())
+    }
+
+    /// Reset history navigation position.
+    pub fn history_reset(&mut self) {
+        self.search_history_idx = -1;
+    }
 }
 
 fn set_tmux_title(title: &str) {
