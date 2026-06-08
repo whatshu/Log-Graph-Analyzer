@@ -90,6 +90,11 @@ pub struct App {
     // Terminal dimensions (updated each render)
     pub terminal_width: u16,
 
+    // Use ASCII-only characters (no Unicode box-drawing or emoji).
+    // Auto-detected from locale; also useful for terminals that don't
+    // support UTF-8.
+    pub ascii_only: bool,
+
     // Pending history export (node_idx, export started flag)
     pub pending_history_export: Option<usize>,
 
@@ -112,6 +117,21 @@ pub struct HistoryNode {
     pub is_head: bool,
     /// Is this node being viewed?
     pub is_viewed: bool,
+}
+
+/// Detect whether the terminal locale supports UTF-8 rendering.
+/// Checks `LC_ALL`, `LC_CTYPE`, and `LANG` in order. Returns `true`
+/// if any of them ends with `.UTF-8` or `.utf8` (case-insensitive).
+fn detect_utf8_locale() -> bool {
+    for var in &["LC_ALL", "LC_CTYPE", "LANG"] {
+        if let Ok(val) = std::env::var(var) {
+            let upper = val.to_uppercase();
+            if upper.ends_with("UTF-8") || upper.ends_with("UTF8") {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 impl App {
@@ -168,6 +188,7 @@ impl App {
             file_browser: FileBrowser::new(Path::new(".")),
             in_tmux,
             terminal_width: 80, // default, updated on first render
+            ascii_only: !detect_utf8_locale(),
             pending_history_export: None,
             pending_op: PendingOp::None,
         };
@@ -337,7 +358,7 @@ impl App {
                 let is_viewed = viewed_id == Some(entry.node_id);
 
                 // Build tree connector
-                let connector = build_connector(entry.depth, &entry.ancestors, entry.has_children);
+                let connector = build_connector(entry.depth, &entry.ancestors, entry.has_children, self.ascii_only);
 
                 self.history_nodes.push(HistoryNode {
                     id: entry.node_id,
@@ -932,25 +953,38 @@ impl App {
 
 /// Build a tree connector string like git log --graph.
 /// ancestors: list of ancestor node_ids that have more children after the current one.
-fn build_connector(depth: usize, ancestors: &[usize], has_children: bool) -> String {
+/// When `ascii_only` is true, uses ASCII characters (|, `--, `--) instead of
+/// Unicode box-drawing (│, ├─, └─) for terminals that don't support UTF-8.
+fn build_connector(depth: usize, ancestors: &[usize], has_children: bool, ascii_only: bool) -> String {
     if depth == 0 {
         return String::new();
     }
     let mut s = String::with_capacity(depth * 2);
     for d in 0..depth - 1 {
-        // Check if there's an ancestor at this depth that still has more children
         let has_continuing = ancestors.len() > d;
         if has_continuing {
-            s.push_str("│ ");
+            if ascii_only {
+                s.push_str("| ");
+            } else {
+                s.push_str("│ ");
+            }
         } else {
             s.push_str("  ");
         }
     }
-    // Last level: ├─ or └─
+    // Last level
     if has_children {
-        s.push_str("├─");
+        if ascii_only {
+            s.push_str("|-");
+        } else {
+            s.push_str("├─");
+        }
     } else {
-        s.push_str("└─");
+        if ascii_only {
+            s.push_str("`-");
+        } else {
+            s.push_str("└─");
+        }
     }
     s
 }
@@ -1236,21 +1270,23 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut app = setup_app(&tmp);
 
-        // Use unique terms to avoid collision with pre-loaded history
-        let initial = app.search_history.len();
+        // Clear any pre-loaded history for predictable tests
+        app.search_history.clear();
 
-        app.add_to_history("UNIQUE_TERM_ONE");
-        assert_eq!(app.search_history[0], "UNIQUE_TERM_ONE");
-        assert_eq!(app.search_history.len(), initial + 1);
+        app.add_to_history("error");
+        assert_eq!(app.search_history[0], "error");
+        assert_eq!(app.search_history.len(), 1);
 
-        app.add_to_history("UNIQUE_TERM_TWO");
-        assert_eq!(app.search_history[0], "UNIQUE_TERM_TWO");
-        assert_eq!(app.search_history.len(), initial + 2);
+        app.add_to_history("warn");
+        assert_eq!(app.search_history[0], "warn");
+        assert_eq!(app.search_history[1], "error");
+        assert_eq!(app.search_history.len(), 2);
 
         // Adding again moves to front without increasing length
-        app.add_to_history("UNIQUE_TERM_ONE");
-        assert_eq!(app.search_history[0], "UNIQUE_TERM_ONE");
-        assert_eq!(app.search_history.len(), initial + 2);
+        app.add_to_history("error");
+        assert_eq!(app.search_history[0], "error");
+        assert_eq!(app.search_history[1], "warn");
+        assert_eq!(app.search_history.len(), 2);
     }
 
     #[test]
@@ -1258,24 +1294,25 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut app = setup_app(&tmp);
 
-        let initial_len = app.search_history.len();
-        app.add_to_history("FIRST_UNIQUE");
-        app.add_to_history("SECOND_UNIQUE");
+        // Clear pre-loaded history for predictable navigation
+        app.search_history.clear();
+        app.add_to_history("first");
+        app.add_to_history("second");
         app.search_history_idx = -1;
 
-        // History is most-recent-first: ["SECOND_UNIQUE", "FIRST_UNIQUE", ...]
-        // Navigate up (older) → "SECOND_UNIQUE" first
+        // History is most-recent-first: ["second", "first"]
+        // Navigate up (older) → "second" first
         let result = app.history_navigate_up();
         assert!(result.is_some());
-        assert_eq!(result.unwrap(), "SECOND_UNIQUE");
+        assert_eq!(result.unwrap(), "second");
 
-        // Navigate up again → "FIRST_UNIQUE"
+        // Navigate up again → "first"
         let result = app.history_navigate_up();
-        assert_eq!(result.unwrap(), "FIRST_UNIQUE");
+        assert_eq!(result.unwrap(), "first");
 
-        // Navigate down → back to "SECOND_UNIQUE"
+        // Navigate down → back to "second"
         let result = app.history_navigate_down();
-        assert_eq!(result.unwrap(), "SECOND_UNIQUE");
+        assert_eq!(result.unwrap(), "second");
 
         // Navigate down again → empty (past the newest)
         let result = app.history_navigate_down();

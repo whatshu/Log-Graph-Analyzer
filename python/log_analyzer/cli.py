@@ -129,6 +129,93 @@ def repo_remove(name: str, workspace: str | None, yes: bool):
 
 
 # ---------------------------------------------------------------------------
+# branch subcommand group
+# ---------------------------------------------------------------------------
+
+@main.group()
+def branch():
+    """Manage branches (list, checkout, create, delete)."""
+    pass
+
+
+@branch.command(name="list")
+@click.option("--repo", "-r", default=None, help="Repository name")
+@click.option("--workspace", "-w", default=None, help="Workspace directory")
+def branch_list(repo: str | None, workspace: str | None):
+    """List all branches in the current repository."""
+    log_repo = open_repo(workspace, repo)
+
+    branches = log_repo.branch_names()
+    current = log_repo.current_branch_name()
+    if not branches:
+        console.print("[dim]No branches (only 'main' exists).[/dim]")
+        return
+
+    table = Table(title="Branches")
+    table.add_column("", width=3)
+    table.add_column("Name", style="green")
+    table.add_column("HEAD Node", style="cyan", justify="right")
+
+    for b in branches:
+        b_head = log_repo.branch_head_node_id(b)
+        marker = "*" if b == current else ""
+        table.add_row(marker, b, str(b_head) if b_head is not None else "?")
+
+    console.print(table)
+    console.print(f"\n[dim]Current branch: {current}[/dim]")
+
+
+@branch.command(name="checkout")
+@click.argument("name")
+@click.option("--repo", "-r", default=None, help="Repository name")
+@click.option("--workspace", "-w", default=None, help="Workspace directory")
+def branch_checkout(name: str, repo: str | None, workspace: str | None):
+    """Switch to a named branch."""
+    log_repo = open_repo(workspace, repo)
+    log_repo.checkout_branch(name)
+    console.print(f"[green]Switched to branch:[/green] {name}")
+
+
+@branch.command(name="create")
+@click.argument("name")
+@click.option("--at", "-a", type=int, default=None, help="Node ID to branch from (default: current HEAD)")
+@click.option("--repo", "-r", default=None, help="Repository name")
+@click.option("--workspace", "-w", default=None, help="Workspace directory")
+def branch_create(name: str, at: int | None, repo: str | None, workspace: str | None):
+    """Create a new branch at a given history node."""
+    log_repo = open_repo(workspace, repo)
+    node_id = at if at is not None else log_repo.head_node_id()
+    created = log_repo.create_branch(name, node_id)
+    if created:
+        console.print(f"[green]Branch '{name}' created at node {node_id}[/green]")
+    else:
+        console.print(f"[red]Branch '{name}' already exists.[/red]")
+
+
+@branch.command(name="delete")
+@click.argument("name")
+@click.option("--repo", "-r", default=None, help="Repository name")
+@click.option("--workspace", "-w", default=None, help="Workspace directory")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
+def branch_delete(name: str, repo: str | None, workspace: str | None, yes: bool):
+    """Delete a branch. Cannot delete 'main' or the current branch."""
+    log_repo = open_repo(workspace, repo)
+    if name == "main":
+        console.print("[red]Cannot delete 'main' branch.[/red]")
+        return
+    if name == log_repo.current_branch_name():
+        console.print("[red]Cannot delete the current branch. Switch to another first.[/red]")
+        return
+    if not yes:
+        click.confirm(f"Delete branch '{name}'?", abort=True)
+    deleted = log_repo.delete_branch(name)
+    if deleted:
+        console.print(f"[green]Branch '{name}' deleted.[/green]")
+    else:
+        console.print(f"[red]Branch '{name}' not found.[/red]")
+
+
+# ---------------------------------------------------------------------------
 # Top-level log commands (operate on the active or --repo repo)
 # ---------------------------------------------------------------------------
 
@@ -188,9 +275,30 @@ def info(repo: str | None, workspace: str | None):
     table.add_row("Original Size", _format_size(meta.original_size))
     table.add_row("Current Lines", f"{log_repo.current_line_count():,}")
     table.add_row("Operations", str(len(history)))
+    table.add_row("Branches", str(len(log_repo.branch_names())))
+    table.add_row("Current Branch", log_repo.current_branch_name())
     table.add_row("Created", meta.created_at)
 
     console.print(table)
+
+    # Show branches
+    branches = log_repo.branch_names()
+    head_id = log_repo.head_node_id()
+    if branches:
+        branch_table = Table(title="Branches")
+        branch_table.add_column("Name", style="green")
+        branch_table.add_column("HEAD Node", style="cyan")
+        branch_table.add_column("", style="dim")
+        for b in branches:
+            b_head = log_repo.branch_head_node_id(b)
+            marker = "*" if b == log_repo.current_branch_name() else ""
+            branch_table.add_row(
+                f"{marker} {b}",
+                str(b_head) if b_head is not None else "?",
+                "(current)" if marker else ""
+            )
+        console.print()
+        console.print(branch_table)
 
 
 @main.command()
@@ -386,6 +494,181 @@ def search(pattern: str, repo: str | None, workspace: str | None, count: int):
         console.print(f"[dim]{line_num:>8}[/dim] {content}")
 
     console.print(f"\n[green]{len(results)} match(es) shown[/green]")
+
+
+@main.command(name="search-file")
+@click.argument("file", type=click.Path(exists=True))
+@click.argument("pattern")
+@click.option("--count", "-n", default=50, help="Max results to show")
+def search_file(file: str, pattern: str, count: int):
+    """Search a file directly for lines matching a regex (no import needed).
+
+    Uses ripgrep's SIMD-accelerated searcher on the raw file.
+    """
+    # Use the static method — doesn't need a repo
+    results = LogRepo.search_file(file, pattern, count)
+    if not results:
+        console.print(f"[dim]No matches found for /{pattern}/[/dim]")
+        return
+
+    for line_num, content in results:
+        console.print(f"[dim]{line_num:>8}[/dim] {content}")
+
+    total_matches = LogRepo.count_file_matches(file, pattern)
+    shown = len(results)
+    if total_matches > shown:
+        console.print(f"\n[green]{shown} of {total_matches} match(es) shown[/green]")
+    else:
+        console.print(f"\n[green]{total_matches} match(es)[/green]")
+
+
+# ---------------------------------------------------------------------------
+# stats subcommand group (analytics / collectors)
+# ---------------------------------------------------------------------------
+
+@main.group()
+def stats():
+    """Analytics and statistics on repositories."""
+    pass
+
+
+@stats.command(name="overview")
+@click.option("--repo", "-r", default=None, help="Repository name")
+@click.option("--workspace", "-w", default=None, help="Workspace directory")
+def stats_overview(repo: str | None, workspace: str | None):
+    """Show overview statistics for a repository."""
+    log_repo = open_repo(workspace, repo)
+    s = log_repo.stats()
+
+    table = Table(title="Repository Statistics")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", style="green", justify="right")
+
+    table.add_row("Total Lines", f"{s.total_lines:,}")
+    table.add_row("Total Bytes", _format_size(s.total_bytes))
+    table.add_row("Avg Line Length", f"{s.avg_line_len:.1f}")
+    table.add_row("Max Line Length", str(s.max_line_len))
+    table.add_row("Min Line Length", str(s.min_line_len))
+    table.add_row("Chunks", str(s.chunk_count))
+
+    console.print(table)
+
+    # Also show line stats from collector
+    ls = log_repo.collect_original_line_stats()
+    if ls:
+        console.print()
+        console.print(f"[dim]Original data: {ls['count']:,} lines, "
+                      f"{_format_size(ls['total_bytes'])}, "
+                      f"avg {ls['avg_len']:.1f} chars/line[/dim]")
+
+
+@stats.command(name="count")
+@click.argument("pattern", required=False)
+@click.option("--repo", "-r", default=None, help="Repository name")
+@click.option("--workspace", "-w", default=None, help="Workspace directory")
+def stats_count(pattern: str | None, repo: str | None, workspace: str | None):
+    """Count lines, optionally matching a regex pattern."""
+    log_repo = open_repo(workspace, repo)
+    n = log_repo.collect_original_count(pattern)
+    if pattern:
+        console.print(f"[green]{n:,}[/green] lines match /{pattern}/")
+    else:
+        console.print(f"[green]{n:,}[/green] total lines")
+
+
+@stats.command(name="group-count")
+@click.argument("pattern")
+@click.option("--group", "-g", type=int, default=1, help="Capture group number (1-based)")
+@click.option("--repo", "-r", default=None, help="Repository name")
+@click.option("--workspace", "-w", default=None, help="Workspace directory")
+def stats_group_count(pattern: str, group: int, repo: str | None, workspace: str | None):
+    """Group lines by regex capture group and show counts."""
+    log_repo = open_repo(workspace, repo)
+    pairs = log_repo.collect_original_group_count(pattern, group)
+
+    if not pairs:
+        console.print("[dim]No matches found.[/dim]")
+        return
+
+    table = Table(title=f"Group Count: /{pattern}/")
+    table.add_column("Value", style="green")
+    table.add_column("Count", style="cyan", justify="right")
+
+    for k, v in pairs.items():
+        table.add_row(k, f"{v:,}")
+
+    console.print(table)
+
+
+@stats.command(name="top")
+@click.argument("pattern")
+@click.option("--group", "-g", type=int, default=1, help="Capture group number (1-based)")
+@click.option("--limit", "-n", type=int, default=10, help="Number of top entries")
+@click.option("--repo", "-r", default=None, help="Repository name")
+@click.option("--workspace", "-w", default=None, help="Workspace directory")
+def stats_top(pattern: str, group: int, limit: int, repo: str | None, workspace: str | None):
+    """Top-N most frequent values of a regex capture group."""
+    log_repo = open_repo(workspace, repo)
+    pairs = log_repo.collect_original_top_n(pattern, group, limit)
+
+    if not pairs:
+        console.print("[dim]No matches found.[/dim]")
+        return
+
+    table = Table(title=f"Top {limit}: /{pattern}/")
+    table.add_column("Value", style="green")
+    table.add_column("Count", style="cyan", justify="right")
+
+    for k, v in pairs:
+        table.add_row(k, f"{v:,}")
+
+    console.print(table)
+
+
+@stats.command(name="distinct")
+@click.argument("pattern")
+@click.option("--group", "-g", type=int, default=1, help="Capture group number (1-based)")
+@click.option("--repo", "-r", default=None, help="Repository name")
+@click.option("--workspace", "-w", default=None, help="Workspace directory")
+def stats_distinct(pattern: str, group: int, repo: str | None, workspace: str | None):
+    """Show distinct values of a regex capture group."""
+    log_repo = open_repo(workspace, repo)
+    values = log_repo.collect_original_unique(pattern, group)
+
+    if not values:
+        console.print("[dim]No matches found.[/dim]")
+        return
+
+    console.print(f"[bold]Distinct values ({len(values)}):[/bold]")
+    for val in values:
+        console.print(f"  {val}")
+
+
+@stats.command(name="numbers")
+@click.argument("pattern")
+@click.option("--group", "-g", type=int, default=1, help="Capture group number (1-based)")
+@click.option("--repo", "-r", default=None, help="Repository name")
+@click.option("--workspace", "-w", default=None, help="Workspace directory")
+def stats_numbers(pattern: str, group: int, repo: str | None, workspace: str | None):
+    """Compute numeric statistics (min/max/avg/sum) from a capture group."""
+    log_repo = open_repo(workspace, repo)
+    s = log_repo.collect_original_numeric_stats(pattern, group)
+
+    if s['count'] == 0:
+        console.print("[dim]No numeric values found.[/dim]")
+        return
+
+    table = Table(title=f"Numeric Stats: /{pattern}/")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", style="green", justify="right")
+
+    table.add_row("Count", f"{s['count']:,}")
+    table.add_row("Sum", f"{s['sum']:,.2f}")
+    table.add_row("Min", f"{s['min']:,.2f}")
+    table.add_row("Max", f"{s['max']:,.2f}")
+    table.add_row("Average", f"{s['avg']:,.2f}")
+
+    console.print(table)
 
 
 def _format_size(size_bytes: int) -> str:
