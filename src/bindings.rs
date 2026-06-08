@@ -143,7 +143,7 @@ impl PyLogRepo {
     /// Get operation history as a list of OperationRecord.
     fn history(&self) -> Vec<PyOperationRecord> {
         self.inner
-            .history()
+            .history_records()
             .iter()
             .map(|r| PyOperationRecord {
                 id: r.id,

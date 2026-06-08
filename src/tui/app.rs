@@ -1,14 +1,17 @@
 use std::cell::RefCell;
 use std::path::Path;
 
+use log_analyzer_core::cache::CacheManager;
 use log_analyzer_core::config::Config;
 use log_analyzer_core::error::Result;
 use log_analyzer_core::operator::Operation;
 use log_analyzer_core::repo::{LogRepo, Workspace};
 
+use std::path::PathBuf;
+
 use super::file_browser::FileBrowser;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum ViewKind {
     LogView,
@@ -19,7 +22,7 @@ pub enum ViewKind {
     Help,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputMode {
     Normal,
     Command,
@@ -32,7 +35,10 @@ enum PendingOp {
     None,
     OpenRepo(String),
     ApplyOperation(Operation),
+    /// Apply operation from a specific node (used for branching off)
+    ApplyOperationFrom(usize, Operation),
     Undo,
+    /// Checkout (view) a history node non-destructively
     CheckoutTo(usize),
     ExportFrom(usize, String),
 }
@@ -67,9 +73,16 @@ pub struct App {
     // History view
     pub history_cursor: usize,
     pub history_nodes: Vec<HistoryNode>,
+    /// Node currently being viewed (None = viewing current branch HEAD).
+    pub viewed_node_id: Option<usize>,
+    /// Whether HEAD is detached (not on any branch).
+    pub detached_head: bool,
 
     // File browser
     pub file_browser: FileBrowser,
+
+    // Caching
+    pub cache_manager: CacheManager,
 
     // Tmux
     pub in_tmux: bool,
@@ -89,6 +102,16 @@ pub struct HistoryNode {
     pub description: String,
     pub line_count: usize,
     pub applied_at: String,
+    /// Tree connector prefix: "│  ", "├─ ", "└─ ", "   "
+    pub connector: String,
+    /// Depth in the tree (for indentation).
+    pub depth: usize,
+    /// Branch labels at this node.
+    pub branch_labels: Vec<String>,
+    /// Is this the current branch HEAD?
+    pub is_head: bool,
+    /// Is this node being viewed?
+    pub is_viewed: bool,
 }
 
 impl App {
@@ -99,9 +122,24 @@ impl App {
 
         let in_tmux = std::env::var("TMUX").is_ok();
 
+        let cache_dir = PathBuf::from(".log_analyzer").join("cache");
+        let cache_manager = CacheManager::new(cache_dir, config.cache.clone())
+            .unwrap_or_else(|_| {
+                // Fallback: in-memory only (directory inaccessible)
+                CacheManager::new(
+                    PathBuf::from(".log_analyzer").join("cache"),
+                    log_analyzer_core::cache::CacheConfig::default(),
+                )
+                .unwrap_or_else(|_| {
+                    // This shouldn't fail with default config since we create dirs
+                    panic!("Failed to create cache manager")
+                })
+            });
+
         let mut app = Self {
             config,
             workspace,
+            cache_manager,
             repo: RefCell::new(None),
             repo_name: String::new(),
             active_view: ViewKind::LogView,
@@ -125,6 +163,8 @@ impl App {
             should_quit: false,
             history_cursor: 0,
             history_nodes: Vec::new(),
+            viewed_node_id: None,
+            detached_head: false,
             file_browser: FileBrowser::new(Path::new(".")),
             in_tmux,
             terminal_width: 80, // default, updated on first render
@@ -159,7 +199,7 @@ impl App {
         match self.workspace.open_repo(name) {
             Ok(repo) => {
                 self.total_lines = repo.original_line_count();
-                self.line_count_is_original = repo.history().is_empty();
+                self.line_count_is_original = repo.history_tree().is_empty();
                 self.repo_name = name.to_string();
                 *self.repo.borrow_mut() = Some(repo);
                 self.scroll_offset = 0;
@@ -180,13 +220,30 @@ impl App {
     }
 
     pub fn load_viewport(&mut self) {
+        // If viewing a specific node, show its state (cached).
+        if self.viewed_node_id.is_some() {
+            let node_id = self.viewed_node_id.unwrap();
+            let lines_result = self.get_node_lines(node_id).ok();
+            if let Some(lines) = lines_result {
+                self.total_lines = lines.len();
+                self.line_count_is_original = node_id == 0;
+                self.clamp_scroll_state();
+                let start = self.scroll_offset.min(lines.len().saturating_sub(1));
+                let end = (start + 200).min(lines.len());
+                self.viewport_lines = lines[start..end].to_vec();
+            } else {
+                self.viewport_lines.clear();
+            }
+            return;
+        }
+
         let repo_ref = self.repo.borrow();
         if repo_ref.is_none() {
             self.viewport_lines.clear();
             return;
         }
 
-        let has_ops = repo_ref.as_ref().map_or(false, |r| !r.history().is_empty());
+        let has_ops = repo_ref.as_ref().map_or(false, |r| !r.history_tree().is_empty());
         drop(repo_ref);
 
         // Get total_lines first, so we can clamp before reading the viewport
@@ -239,7 +296,7 @@ impl App {
     pub fn refresh_line_count(&mut self) {
         let repo_ref = self.repo.borrow();
         if let Some(ref r) = *repo_ref {
-            if r.history().is_empty() {
+            if r.history_tree().is_empty() {
                 self.total_lines = r.original_line_count();
                 self.line_count_is_original = true;
             }
@@ -254,49 +311,67 @@ impl App {
         }
     }
 
-    /// Build the history view nodes.
+    /// Build the history view nodes from the tree topological order.
     pub fn build_history(&mut self) {
         self.history_nodes.clear();
         let repo_ref = self.repo.borrow();
         if let Some(ref r) = *repo_ref {
-            let original_lines = r.original_line_count();
-            self.history_nodes.push(HistoryNode {
-                id: 0,
-                description: format!("Import — {} lines", original_lines),
-                line_count: original_lines,
-                applied_at: String::from("—"),
-            });
+            let tree = r.history_tree();
+            let order = tree.topological_order();
 
-            for record in r.history() {
-                let lines = self.compute_line_count_at_node(r, record.id);
+            let head_id = tree.head();
+            let viewed_id = self.viewed_node_id;
+
+            for entry in &order {
+                let desc = if entry.node_id == 0 {
+                    format!("Import — {} lines", r.original_line_count())
+                } else {
+                    entry.description.clone()
+                };
+                let line_count = if entry.node_id == 0 {
+                    r.original_line_count()
+                } else {
+                    r.line_count_at(entry.node_id).unwrap_or(0)
+                };
+                let is_head = entry.node_id == head_id || entry.is_current_head;
+                let is_viewed = viewed_id == Some(entry.node_id);
+
+                // Build tree connector
+                let connector = build_connector(entry.depth, &entry.ancestors, entry.has_children);
+
                 self.history_nodes.push(HistoryNode {
-                    id: record.id + 1,
-                    description: record.operation.describe(),
-                    line_count: lines,
-                    applied_at: record
-                        .applied_at
-                        .format("%Y-%m-%d %H:%M")
-                        .to_string(),
+                    id: entry.node_id,
+                    description: desc,
+                    line_count,
+                    applied_at: if entry.node_id == 0 {
+                        String::from("—")
+                    } else {
+                        entry
+                            .applied_at
+                            .format("%Y-%m-%d %H:%M")
+                            .to_string()
+                    },
+                    connector,
+                    depth: entry.depth,
+                    branch_labels: entry.branch_labels.clone(),
+                    is_head,
+                    is_viewed,
                 });
             }
         }
-        self.history_cursor = self.history_nodes.len().saturating_sub(1);
-    }
-
-    fn compute_line_count_at_node(&self, repo: &LogRepo, op_id: usize) -> usize {
-        // For the last operation, just get current line count
-        let total_ops = repo.history().len();
-        if op_id + 1 == total_ops {
-            // Can't call current_line_count on &LogRepo — use compute_state_at
-            if let Ok(state) = repo.compute_state_at(op_id) {
-                return state.len();
-            }
-        }
-        if let Ok(state) = repo.compute_state_at(op_id) {
-            state.len()
-        } else {
-            0
-        }
+        // Set cursor to HEAD node
+        let head_id = {
+            let repo_ref = self.repo.borrow();
+            repo_ref
+                .as_ref()
+                .map(|r| r.head_node_id())
+                .unwrap_or(0)
+        };
+        self.history_cursor = self
+            .history_nodes
+            .iter()
+            .position(|n| n.id == head_id)
+            .unwrap_or(self.history_nodes.len().saturating_sub(1));
     }
 
     pub fn open_repo(&mut self, name: Option<&str>) {
@@ -348,7 +423,16 @@ impl App {
     }
 
     pub fn queue_operation(&mut self, op: Operation) {
-        self.pending_op = PendingOp::ApplyOperation(op);
+        // If viewing a historical (non-HEAD) node, branch off instead
+        if let (Some(node_id), true) = (self.viewed_node_id, self.detached_head) {
+            self.pending_op = PendingOp::ApplyOperationFrom(node_id, op);
+        } else {
+            self.pending_op = PendingOp::ApplyOperation(op);
+        }
+    }
+
+    pub fn queue_operation_from(&mut self, node_id: usize, op: Operation) {
+        self.pending_op = PendingOp::ApplyOperationFrom(node_id, op);
     }
 
     pub fn queue_undo(&mut self) {
@@ -357,6 +441,49 @@ impl App {
 
     pub fn queue_checkout(&mut self, node_idx: usize) {
         self.pending_op = PendingOp::CheckoutTo(node_idx);
+    }
+
+    /// Return to HEAD from viewed node mode.
+    /// Get lines at a node, using cache if available.
+    pub fn get_node_lines(&mut self, node_id: usize) -> Result<Vec<String>> {
+        let repo_hash = {
+            let repo_ref = self.repo.borrow();
+            repo_ref
+                .as_ref()
+                .map(|r| log_analyzer_core::cache::hash_repo_path(r.path()))
+                .unwrap_or_default()
+        };
+
+        // Try cache first
+        if let Some(lines) = self.cache_manager.get(&repo_hash, node_id) {
+            return Ok(lines);
+        }
+
+        // Compute and cache
+        let lines = {
+            let repo_ref = self.repo.borrow();
+            if let Some(ref r) = *repo_ref {
+                r.view_node(node_id)?
+            } else {
+                return Err(log_analyzer_core::error::LogAnalyzerError::Repo(
+                    "No repo open".to_string(),
+                ));
+            }
+        };
+
+        // Cache the result
+        let _ = self.cache_manager.put(&repo_hash, node_id, &lines);
+
+        Ok(lines)
+    }
+
+    /// Return to HEAD from viewed node mode.
+    pub fn return_to_head(&mut self) {
+        self.viewed_node_id = None;
+        self.detached_head = false;
+        self.status_message = String::from("Returned to HEAD");
+        self.load_viewport();
+        self.re_search();
     }
 
     pub fn queue_export_from(&mut self, node_idx: usize, path: String) {
@@ -395,7 +522,7 @@ impl App {
                         Ok(op) => {
                             self.status_message =
                                 format!("Undone: {}", op.describe());
-                            if r.history().is_empty() {
+                            if r.history_tree().is_empty() {
                                 self.line_count_is_original = true;
                             }
                         }
@@ -411,40 +538,31 @@ impl App {
                 self.re_search();
             }
             PendingOp::CheckoutTo(node_idx) => {
-                let mut repo_mut = self.repo.borrow_mut();
-                if let Some(ref mut r) = *repo_mut {
-                    let target_op_idx = if node_idx == 0 {
-                        // Undo everything
-                        while !r.history().is_empty() {
-                            if let Err(e) = r.undo() {
-                                self.error_message =
-                                    Some(format!("Checkout failed: {}", e));
-                                return;
-                            }
-                        }
-                        self.status_message = String::from("Checked out to root");
-                        self.line_count_is_original = true;
+                let node_id = node_idx;
+                // Check detached status before getting lines
+                let is_detached = {
+                    let repo_ref = self.repo.borrow();
+                    repo_ref.as_ref().map_or(true, |r| node_id != r.head_node_id())
+                };
+                // Get lines via cache
+                match self.get_node_lines(node_id) {
+                    Ok(lines) => {
+                        self.viewed_node_id = Some(node_id);
+                        self.detached_head = is_detached;
+                        self.status_message = format!(
+                            "Viewing node {} ({}). Apply operation to branch off.",
+                            node_id,
+                            if is_detached { "detached" } else { "HEAD" }
+                        );
+                        self.total_lines = lines.len();
+                        self.line_count_is_original = node_id == 0;
+                    }
+                    Err(e) => {
+                        self.error_message =
+                            Some(format!("View node failed: {}", e));
                         return;
-                    } else {
-                        // op_id in history starts at 0, node_idx is id+1, so target = node_idx-1
-                        node_idx - 1
-                    };
-                    match r.checkout_to(target_op_idx) {
-                        Ok(()) => {
-                            self.status_message = format!(
-                                "Checked out to operation {}",
-                                target_op_idx
-                            );
-                            self.line_count_is_original = r.history().is_empty();
-                        }
-                        Err(e) => {
-                            self.error_message =
-                                Some(format!("Checkout failed: {}", e));
-                        }
                     }
                 }
-                drop(repo_mut);
-                self.refresh_line_count();
                 self.load_viewport();
                 self.re_search();
                 self.build_history();
@@ -452,14 +570,14 @@ impl App {
             PendingOp::ExportFrom(node_idx, path) => {
                 let repo_ref = self.repo.borrow();
                 if let Some(ref r) = *repo_ref {
-                    let result = if node_idx == 0 {
+                    let node_id = node_idx;
+                    let result = if node_id == 0 {
                         // Export original
                         r.read_all_original_lines()
                             .map(|lines| lines.join("\n"))
                     } else {
-                        // Export at operation (node_idx - 1 since node 0 is import)
-                        let op_idx = node_idx - 1;
-                        r.compute_state_at(op_idx)
+                        // Export at specific node
+                        r.compute_state_at(node_id)
                             .map(|lines| lines.join("\n"))
                     };
                     match result {
@@ -481,6 +599,44 @@ impl App {
                     self.error_message = Some("No repo open".to_string());
                 }
             }
+            PendingOp::ApplyOperationFrom(from_node_id, op) => {
+                let desc = op.describe();
+                let mut repo_mut = self.repo.borrow_mut();
+                if let Some(ref mut r) = *repo_mut {
+                    let branch_name = match &op {
+                        Operation::Filter { pattern, keep } => {
+                            if *keep {
+                                format!("filter-{}", pattern)
+                            } else {
+                                format!("filter-rm-{}", pattern)
+                            }
+                        }
+                        Operation::Replace { pattern, .. } => {
+                            format!("replace-{}", pattern)
+                        }
+                        _ => String::from("branch"),
+                    };
+                    match r.apply_operation_from(from_node_id, &branch_name, op) {
+                        Ok(()) => {
+                            self.status_message = format!(
+                                "Created branch '{}' and applied: {}",
+                                branch_name, desc
+                            );
+                            self.line_count_is_original = false;
+                            self.viewed_node_id = None;
+                            self.detached_head = false;
+                        }
+                        Err(e) => {
+                            self.error_message =
+                                Some(format!("Branch operation failed: {}", e));
+                        }
+                    }
+                }
+                drop(repo_mut);
+                self.refresh_line_count();
+                self.load_viewport();
+                self.re_search();
+            }
         }
     }
 
@@ -490,17 +646,11 @@ impl App {
         self.search_index = 0;
 
         let results: Vec<usize> = {
-            let repo_ref = self.repo.borrow();
-            if repo_ref.is_none() {
-                return;
-            }
-
-            let has_ops = repo_ref.as_ref().map_or(false, |r: &LogRepo| !r.history().is_empty());
-            if has_ops {
-                drop(repo_ref);
-                let mut repo_mut = self.repo.borrow_mut();
-                if let Some(ref mut r) = *repo_mut {
-                    let lines = r.get_current_lines().unwrap_or_default();
+            // If viewing a specific node, get its state
+            if let Some(node_id) = self.viewed_node_id {
+                let repo_ref = self.repo.borrow();
+                if let Some(ref r) = *repo_ref {
+                    let lines = r.view_node(node_id).unwrap_or_default();
                     match regex::Regex::new(query) {
                         Ok(re) => lines
                             .iter()
@@ -515,13 +665,39 @@ impl App {
                     Vec::new()
                 }
             } else {
-                let r = repo_ref.as_ref().unwrap();
-                let proc = r.processor();
-                proc.parallel_search(query, 10_000)
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|(idx, _)| *idx)
-                    .collect()
+                let repo_ref = self.repo.borrow();
+                if repo_ref.is_none() {
+                    return;
+                }
+
+                let has_ops = repo_ref.as_ref().map_or(false, |r: &LogRepo| !r.history_tree().is_empty());
+                if has_ops {
+                    drop(repo_ref);
+                    let mut repo_mut = self.repo.borrow_mut();
+                    if let Some(ref mut r) = *repo_mut {
+                        let lines = r.get_current_lines().unwrap_or_default();
+                        match regex::Regex::new(query) {
+                            Ok(re) => lines
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, line)| re.is_match(line))
+                                .take(10_000)
+                                .map(|(i, _)| i)
+                                .collect(),
+                            Err(_) => Vec::new(),
+                        }
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    let r = repo_ref.as_ref().unwrap();
+                    let proc = r.processor();
+                    proc.parallel_search(query, 10_000)
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|(idx, _)| *idx)
+                        .collect()
+                }
             }
         };
 
@@ -555,20 +731,11 @@ impl App {
 
         let query = self.search_query.clone();
         let results: Vec<usize> = {
-            let repo_ref = self.repo.borrow();
-            if repo_ref.is_none() {
-                return;
-            }
-
-            let has_ops =
-                repo_ref
-                    .as_ref()
-                    .map_or(false, |r: &LogRepo| !r.history().is_empty());
-            if has_ops {
-                drop(repo_ref);
-                let mut repo_mut = self.repo.borrow_mut();
-                if let Some(ref mut r) = *repo_mut {
-                    let lines = r.get_current_lines().unwrap_or_default();
+            // If viewing a specific node, get its state
+            if let Some(node_id) = self.viewed_node_id {
+                let repo_ref = self.repo.borrow();
+                if let Some(ref r) = *repo_ref {
+                    let lines = r.view_node(node_id).unwrap_or_default();
                     match regex::Regex::new(&query) {
                         Ok(re) => lines
                             .iter()
@@ -583,13 +750,42 @@ impl App {
                     Vec::new()
                 }
             } else {
-                let r = repo_ref.as_ref().unwrap();
-                let proc = r.processor();
-                proc.parallel_search(&query, 10_000)
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|(idx, _)| *idx)
-                    .collect()
+                let repo_ref = self.repo.borrow();
+                if repo_ref.is_none() {
+                    return;
+                }
+
+                let has_ops =
+                    repo_ref
+                        .as_ref()
+                        .map_or(false, |r: &LogRepo| !r.history_tree().is_empty());
+                if has_ops {
+                    drop(repo_ref);
+                    let mut repo_mut = self.repo.borrow_mut();
+                    if let Some(ref mut r) = *repo_mut {
+                        let lines = r.get_current_lines().unwrap_or_default();
+                        match regex::Regex::new(&query) {
+                            Ok(re) => lines
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, line)| re.is_match(line))
+                                .take(10_000)
+                                .map(|(i, _)| i)
+                                .collect(),
+                            Err(_) => Vec::new(),
+                        }
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    let r = repo_ref.as_ref().unwrap();
+                    let proc = r.processor();
+                    proc.parallel_search(&query, 10_000)
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|(idx, _)| *idx)
+                        .collect()
+                }
             }
         };
 
@@ -734,9 +930,424 @@ impl App {
     }
 }
 
+/// Build a tree connector string like git log --graph.
+/// ancestors: list of ancestor node_ids that have more children after the current one.
+fn build_connector(depth: usize, ancestors: &[usize], has_children: bool) -> String {
+    if depth == 0 {
+        return String::new();
+    }
+    let mut s = String::with_capacity(depth * 2);
+    for d in 0..depth - 1 {
+        // Check if there's an ancestor at this depth that still has more children
+        let has_continuing = ancestors.len() > d;
+        if has_continuing {
+            s.push_str("│ ");
+        } else {
+            s.push_str("  ");
+        }
+    }
+    // Last level: ├─ or └─
+    if has_children {
+        s.push_str("├─");
+    } else {
+        s.push_str("└─");
+    }
+    s
+}
+
 fn set_tmux_title(title: &str) {
     // ANSI escape to set terminal title (works in tmux too)
     print!("\x1b]2;{}\x07", title);
     // Also set tmux pane title
     print!("\x1b]0;{}\x07", title);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::Path;
+    use tempfile::TempDir;
+
+    fn make_test_log(lines: usize) -> String {
+        (0..lines)
+            .map(|i| {
+                let level = match i % 4 {
+                    0 => "INFO",
+                    1 => "WARN",
+                    2 => "ERROR",
+                    3 => "DEBUG",
+                    _ => "unknown",
+                };
+                format!("2024-01-01 00:00:{:02} [{}] message {}", i % 60, level, i)
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn setup_app(tmp: &TempDir) -> App {
+        let log_file = tmp.path().join("test.log");
+        let content = make_test_log(200);
+        fs::write(&log_file, &content).unwrap();
+        let ws_root = tmp.path().join("workspace");
+        let ws = Workspace::open(&ws_root).unwrap();
+        let _ = ws.migrate_if_needed();
+        ws.import_file("test", &log_file).unwrap();
+        App::new(&ws_root, Some("test")).unwrap()
+    }
+
+    // ── App creation ──
+
+    #[test]
+    fn test_app_new_with_repo() {
+        let tmp = TempDir::new().unwrap();
+        let app = setup_app(&tmp);
+
+        assert_eq!(app.repo_name, "test");
+        assert_eq!(app.total_lines, 200);
+        assert!(!app.viewport_lines.is_empty());
+        assert_eq!(app.active_view, ViewKind::LogView);
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn test_app_new_empty_workspace() {
+        let tmp = TempDir::new().unwrap();
+        let ws_root = tmp.path().join("empty_ws");
+        fs::create_dir_all(&ws_root).unwrap();
+        let app = App::new(&ws_root, None).unwrap();
+
+        assert!(app.repo_name.is_empty());
+        assert_eq!(app.total_lines, 0);
+        assert!(app.viewport_lines.is_empty());
+    }
+
+    // ── Search ──
+
+    #[test]
+    fn test_do_search_finds_matches() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        app.do_search("ERROR");
+        assert!(!app.search_results.is_empty());
+        assert_eq!(app.search_query, "ERROR");
+        // Should jump to first match
+        assert!(app.cursor_line < 200);
+    }
+
+    #[test]
+    fn test_do_search_no_match() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        app.do_search("NO_SUCH_TEXT_ANYWHERE");
+        assert!(app.search_results.is_empty());
+        assert_eq!(app.status_message, "No matches found");
+    }
+
+    #[test]
+    fn test_next_and_prev_match() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        app.do_search("message 5");
+        assert!(!app.search_results.is_empty());
+        let first = app.cursor_line;
+
+        app.next_match();
+        assert_ne!(app.cursor_line, first);
+        let second = app.cursor_line;
+
+        app.prev_match();
+        assert_eq!(app.cursor_line, first);
+
+        app.prev_match(); // wraps around to last match
+        assert_ne!(app.cursor_line, first);
+        app.next_match(); // wraps around to first again
+        assert_eq!(app.cursor_line, first);
+    }
+
+    // ── Filter ──
+
+    #[test]
+    fn test_filter_keep_reduces_lines() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        assert_eq!(app.total_lines, 200);
+        app.queue_operation(Operation::Filter {
+            pattern: "ERROR".to_string(),
+            keep: true,
+        });
+        app.apply_pending();
+
+        // ERROR is every 4th line → 50 lines
+        assert_eq!(app.total_lines, 50);
+        assert!(app.viewport_lines.iter().all(|l| l.contains("ERROR")));
+    }
+
+    #[test]
+    fn test_filter_remove() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        app.queue_operation(Operation::Filter {
+            pattern: "ERROR".to_string(),
+            keep: false,
+        });
+        app.apply_pending();
+
+        // 200 - 50 = 150 lines
+        assert_eq!(app.total_lines, 150);
+        assert!(!app.viewport_lines.iter().any(|l| l.contains("ERROR")));
+    }
+
+    // ── Undo ──
+
+    #[test]
+    fn test_undo_restores_state() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        app.queue_operation(Operation::Filter {
+            pattern: "ERROR".to_string(),
+            keep: true,
+        });
+        app.apply_pending();
+        assert_eq!(app.total_lines, 50);
+        assert!(!app.line_count_is_original);
+
+        app.queue_undo();
+        app.apply_pending();
+        assert_eq!(app.total_lines, 200);
+        // Note: line_count_is_original may stay false with non-destructive undo
+        // since history tree nodes are preserved
+    }
+
+    // ── Scroll offset clamping (regression test for the blank-viewport bug) ──
+
+    #[test]
+    fn test_scroll_offset_clamped_after_filter() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        // Simulate a search that moves scroll far down
+        app.scroll_offset = 150;
+        assert!(app.scroll_offset > 0);
+
+        // Apply a filter that drastically reduces the dataset
+        app.queue_operation(Operation::Filter {
+            pattern: "ERROR".to_string(),
+            keep: true,
+        });
+        app.apply_pending();
+
+        // After load_viewport, scroll_offset should be clamped to < total_lines
+        assert!(app.scroll_offset < app.total_lines);
+        assert!(!app.viewport_lines.is_empty());
+        assert!(app.cursor_line < app.total_lines);
+    }
+
+    #[test]
+    fn test_scroll_offset_clamped_to_zero_when_empty() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        app.scroll_offset = 50;
+
+        // Filter to zero lines (pattern never matches)
+        app.queue_operation(Operation::Filter {
+            pattern: "ZZZ_NONEXISTENT_ZZZ".to_string(),
+            keep: true,
+        });
+        app.apply_pending();
+
+        assert_eq!(app.total_lines, 0);
+        assert_eq!(app.scroll_offset, 0);
+        assert_eq!(app.cursor_line, 0);
+    }
+
+    // ── Horizontal scroll ──
+
+    #[test]
+    fn test_horizontal_scroll_left_right() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        assert_eq!(app.horizontal_scroll, 0);
+        app.scroll_right(20);
+        assert_eq!(app.horizontal_scroll, 20);
+        app.scroll_left(8);
+        assert_eq!(app.horizontal_scroll, 12);
+        app.scroll_left(50);
+        assert_eq!(app.horizontal_scroll, 0); // saturating_sub
+    }
+
+    #[test]
+    fn test_go_to_line_start() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        app.scroll_right(50);
+        assert!(app.horizontal_scroll > 0);
+        app.go_to_line_start();
+        assert_eq!(app.horizontal_scroll, 0);
+    }
+
+    #[test]
+    fn test_go_to_line_end() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        // Ensure we have lines with some length
+        assert!(!app.viewport_lines.is_empty());
+        app.go_to_line_end();
+        // Either 0 (all lines fit) or > 0 (some lines wider)
+        // We can at least assert it doesn't panic
+    }
+
+    // ── Input modes ──
+
+    #[test]
+    fn test_input_mode_transitions() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        assert_eq!(app.input_mode, InputMode::Normal);
+
+        // Enter search mode
+        app.input_mode = InputMode::Search;
+        app.input_buffer = "test_query".to_string();
+        assert_eq!(app.input_mode, InputMode::Search);
+        assert_eq!(app.input_buffer, "test_query");
+
+        // Enter command mode
+        app.input_mode = InputMode::Command;
+        app.input_buffer = ":f ERROR".to_string();
+        assert_eq!(app.input_mode, InputMode::Command);
+    }
+
+    // ── Search history ──
+
+    #[test]
+    fn test_add_to_history_dedup() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        // Use unique terms to avoid collision with pre-loaded history
+        let initial = app.search_history.len();
+
+        app.add_to_history("UNIQUE_TERM_ONE");
+        assert_eq!(app.search_history[0], "UNIQUE_TERM_ONE");
+        assert_eq!(app.search_history.len(), initial + 1);
+
+        app.add_to_history("UNIQUE_TERM_TWO");
+        assert_eq!(app.search_history[0], "UNIQUE_TERM_TWO");
+        assert_eq!(app.search_history.len(), initial + 2);
+
+        // Adding again moves to front without increasing length
+        app.add_to_history("UNIQUE_TERM_ONE");
+        assert_eq!(app.search_history[0], "UNIQUE_TERM_ONE");
+        assert_eq!(app.search_history.len(), initial + 2);
+    }
+
+    #[test]
+    fn test_history_navigation() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        let initial_len = app.search_history.len();
+        app.add_to_history("FIRST_UNIQUE");
+        app.add_to_history("SECOND_UNIQUE");
+        app.search_history_idx = -1;
+
+        // History is most-recent-first: ["SECOND_UNIQUE", "FIRST_UNIQUE", ...]
+        // Navigate up (older) → "SECOND_UNIQUE" first
+        let result = app.history_navigate_up();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), "SECOND_UNIQUE");
+
+        // Navigate up again → "FIRST_UNIQUE"
+        let result = app.history_navigate_up();
+        assert_eq!(result.unwrap(), "FIRST_UNIQUE");
+
+        // Navigate down → back to "SECOND_UNIQUE"
+        let result = app.history_navigate_down();
+        assert_eq!(result.unwrap(), "SECOND_UNIQUE");
+
+        // Navigate down again → empty (past the newest)
+        let result = app.history_navigate_down();
+        assert_eq!(result.unwrap(), "");
+    }
+
+    // ── View switching ──
+
+    #[test]
+    fn test_view_switching() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        assert_eq!(app.active_view, ViewKind::LogView);
+
+        app.active_view = ViewKind::History;
+        assert_eq!(app.active_view, ViewKind::History);
+
+        app.active_view = ViewKind::RepoList;
+        assert_eq!(app.active_view, ViewKind::RepoList);
+
+        app.active_view = ViewKind::Analytics;
+        assert_eq!(app.active_view, ViewKind::Analytics);
+    }
+
+    // ── Help toggle ──
+
+    #[test]
+    fn test_help_toggle() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        assert!(!app.show_help);
+        app.show_help = true;
+        assert!(app.show_help);
+        app.show_help = false;
+        assert!(!app.show_help);
+    }
+
+    // ── Go to line ──
+
+    #[test]
+    fn test_go_to_line() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        app.go_to_line(50);
+        assert_eq!(app.cursor_line, 50);
+        // scroll_offset should be near the cursor
+        assert!(app.scroll_offset <= 50);
+    }
+
+    #[test]
+    fn test_go_to_line_clamped() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        app.go_to_line(9999); // beyond end
+        assert_eq!(app.cursor_line, 199); // clamped to last line
+    }
+
+    // ── Page up/down ──
+
+    #[test]
+    fn test_page_down_and_up() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        let initial = app.scroll_offset;
+        app.page_down();
+        assert!(app.scroll_offset > initial);
+        app.page_up();
+        assert_eq!(app.scroll_offset, initial);
+    }
 }

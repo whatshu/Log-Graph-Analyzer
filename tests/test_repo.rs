@@ -281,17 +281,19 @@ fn test_multiple_operations_and_undo() {
     })
     .unwrap();
 
-    // Check history
-    assert_eq!(repo.history().len(), 2);
+    // Check history (tree has root + 2 ops = 3 nodes; history_tree includes root)
+    assert_eq!(repo.history_tree().len(), 3);
 
     // Undo replace
     repo.undo().unwrap();
-    assert_eq!(repo.history().len(), 1);
+    // Nodes are never deleted — tree still has 3 nodes, but HEAD moved back
+    assert_eq!(repo.history_tree().len(), 3);
     assert_eq!(repo.current_line_count().unwrap(), after_filter);
 
     // Undo filter
     repo.undo().unwrap();
-    assert_eq!(repo.history().len(), 0);
+    // HEAD back to root — 3 nodes still exist
+    assert_eq!(repo.history_tree().len(), 3);
     assert_eq!(repo.current_line_count().unwrap(), original_count);
 }
 
@@ -334,7 +336,7 @@ fn test_operations_persist_across_reopen() {
 
     // Reopen and verify operations are preserved
     let mut repo = LogRepo::open(&repo_path).unwrap();
-    assert_eq!(repo.history().len(), 1);
+    assert_eq!(repo.history_tree().len(), 2); // root + 1 op
 
     let lines = repo.get_current_lines().unwrap();
     assert_eq!(lines, vec!["a", "c", "e"]);

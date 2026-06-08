@@ -83,6 +83,16 @@ pub fn normal_mode(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Char('l') => {
             app.horizontal_scroll = 0;
+            // If viewing a historical node, return to HEAD first
+            if app.viewed_node_id.is_some() {
+                app.return_to_head();
+            }
+            app.active_view = ViewKind::LogView;
+            app.load_viewport();
+        }
+        // H: return to HEAD from view mode (like Shift+H)
+        KeyCode::Char('H') => {
+            app.return_to_head();
             app.active_view = ViewKind::LogView;
             app.load_viewport();
         }
@@ -364,6 +374,129 @@ fn execute_command(app: &mut App, cmd: &str) {
     } else if let Some(name) = cmd.strip_prefix("repo ") {
         let name = name.trim();
         app.open_repo(Some(name));
+    } else if let Some(name) = cmd.strip_prefix("branch ") {
+        let name = name.trim();
+        if name.is_empty() {
+            app.error_message = Some("Usage: :branch <name>".to_string());
+            return;
+        }
+        let mut repo_mut = app.repo.borrow_mut();
+        if let Some(ref mut r) = *repo_mut {
+            let head = r.head_node_id();
+            match r.create_branch(name, head) {
+                Ok(true) => {
+                    app.status_message = format!("Created branch '{}' at node {}", name, head);
+                }
+                Ok(false) => {
+                    app.error_message = Some(format!("Branch '{}' already exists", name));
+                }
+                Err(e) => {
+                    app.error_message = Some(format!("Failed to create branch: {}", e));
+                }
+            }
+        } else {
+            app.error_message = Some("No repo open".to_string());
+        }
+    } else if let Some(name) = cmd.strip_prefix("checkout ") {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            app.error_message = Some("Usage: :checkout <branch>".to_string());
+            return;
+        }
+        let checkout_err: Option<String> = {
+            let mut repo_mut = app.repo.borrow_mut();
+            if let Some(ref mut r) = *repo_mut {
+                match r.checkout_branch(&name) {
+                    Ok(()) => None,
+                    Err(e) => Some(format!("{}", e)),
+                }
+            } else {
+                Some("No repo open".to_string())
+            }
+        };
+        match checkout_err {
+            None => {
+                app.viewed_node_id = None;
+                app.detached_head = false;
+                app.status_message = format!("Switched to branch '{}'", name);
+                app.refresh_line_count();
+                app.load_viewport();
+                app.re_search();
+            }
+            Some(err) => {
+                app.error_message = Some(format!("Checkout failed: {}", err));
+            }
+        }
+    } else if cmd == "branches" {
+        let repo_ref = app.repo.borrow();
+        if let Some(ref r) = *repo_ref {
+            let names = r.branch_names();
+            let current = r.current_branch();
+            let list: Vec<String> = names
+                .iter()
+                .map(|n| {
+                    if *n == current {
+                        format!("* {}", n)
+                    } else {
+                        format!("  {}", n)
+                    }
+                })
+                .collect();
+            app.status_message = format!("Branches: {}", list.join(", "));
+        } else {
+            app.error_message = Some("No repo open".to_string());
+        }
+    } else if let Some(args) = cmd.strip_prefix("cache ") {
+        let args = args.trim();
+        if args == "stats" {
+            let stats = app.cache_manager.stats();
+            if stats.max_size_bytes > 0 {
+                app.status_message = format!(
+                    "Cache: {}/{} ({:.1}%) | {} entries | {} pinned",
+                    format_bytes(stats.total_size_bytes),
+                    format_bytes(stats.max_size_bytes),
+                    if stats.max_size_bytes > 0 {
+                        stats.total_size_bytes as f64 / stats.max_size_bytes as f64 * 100.0
+                    } else {
+                        0.0
+                    },
+                    stats.entry_count,
+                    stats.pinned_count,
+                );
+            } else {
+                app.status_message = format!(
+                    "Cache: {} | {} entries | {} pinned (no size limit)",
+                    format_bytes(stats.total_size_bytes),
+                    stats.entry_count,
+                    stats.pinned_count,
+                );
+            }
+        } else if let Some(mb_str) = args.strip_prefix("max ") {
+            if let Ok(mb) = mb_str.trim().parse::<u64>() {
+                app.cache_manager.set_session_max_mb(mb);
+                app.status_message = format!("Cache max size set to {} MB (session)", mb);
+            } else {
+                app.error_message = Some("Usage: :cache max <mb>".to_string());
+            }
+        } else if let Some(node_str) = args.strip_prefix("pin ") {
+            if let Ok(node_id) = node_str.trim().parse::<usize>() {
+                app.cache_manager.pin(node_id);
+                app.status_message = format!("Pinned node {} (never evicted)", node_id);
+            } else {
+                app.error_message = Some("Usage: :cache pin <node_id>".to_string());
+            }
+        } else if let Some(node_str) = args.strip_prefix("unpin ") {
+            if let Ok(node_id) = node_str.trim().parse::<usize>() {
+                app.cache_manager.unpin(node_id);
+                app.status_message = format!("Unpinned node {}", node_id);
+            } else {
+                app.error_message = Some("Usage: :cache unpin <node_id>".to_string());
+            }
+        } else {
+            app.error_message = Some(
+                "Usage: :cache stats|max <mb>|pin <nid>|unpin <nid>".to_string(),
+            );
+        }
     } else if cmd == "filters" {
         let names = app.config.filter_names();
         if names.is_empty() {
@@ -393,6 +526,21 @@ fn resolve_pattern(config: &log_analyzer_core::config::Config, pattern: &str) ->
         })
     } else {
         trimmed.to_string()
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
+    let mut size = bytes as f64;
+    let mut unit = 0;
+    while size >= 1024.0 && unit < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{} B", bytes)
+    } else {
+        format!("{:.1} {}", size, UNITS[unit])
     }
 }
 

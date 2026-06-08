@@ -204,7 +204,7 @@ fn render_log_view(f: &mut Frame, area: Rect, app: &App) {
         " {} — {} lines ({} ops) ",
         app.repo_name,
         app.total_lines,
-        repo.as_ref().map(|r: &LogRepo| r.history().len()).unwrap_or(0)
+        repo.as_ref().map(|r: &LogRepo| r.history_tree().len().saturating_sub(1)).unwrap_or(0)
     );
 
     let lines: Vec<Line> = app
@@ -312,63 +312,121 @@ fn render_history(f: &mut Frame, area: Rect, app: &App) {
         start
     };
 
+    let repo_ref = app.repo.borrow();
+    let current_branch = repo_ref
+        .as_ref()
+        .map(|r| r.current_branch().to_string())
+        .unwrap_or_else(|| String::from("main"));
+    drop(repo_ref);
+
     let lines: Vec<Line> = app.history_nodes[start..end]
         .iter()
         .enumerate()
         .map(|(i, node)| {
             let idx = start + i;
             let is_cursor = idx == app.history_cursor;
-            let is_last = idx == app.history_nodes.len() - 1;
 
+            let mut spans: Vec<Span> = Vec::new();
+
+            // Tree connector
+            if !node.connector.is_empty() {
+                spans.push(Span::styled(
+                    format!("{} ", node.connector),
+                    Style::default().fg(COLOR_DIM),
+                ));
+            }
+
+            // Cursor marker
             let marker = if is_cursor {
-                if is_last { " ● " } else { " ◉ " }
-            } else if is_last {
-                " ○ "
+                Span::styled("● ", Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD))
             } else {
-                " ◦ "
+                Span::styled("◦ ", Style::default().fg(COLOR_DIM))
             };
 
-            let _connector = if idx < app.history_nodes.len() - 1 {
-                "│"
-            } else {
-                " "
-            };
-
-            let style = if is_cursor {
+            // Node ID (colored by cursor)
+            let id_style = if is_cursor {
                 Style::default().fg(Color::Black).bg(COLOR_ACCENT).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(COLOR_DIM)
+            };
+            let id_span = Span::styled(format!("{:>2} ", node.id), id_style);
+
+            // Description
+            let desc_style = if is_cursor {
+                Style::default().fg(COLOR_FG).add_modifier(Modifier::BOLD)
+            } else if node.is_head {
+                Style::default().fg(COLOR_ACCENT)
+            } else if node.is_viewed {
+                Style::default().fg(COLOR_HIGHLIGHT)
             } else {
                 Style::default().fg(COLOR_FG)
             };
+            let desc_text = truncate_str(&node.description, 45);
+            let desc_span = Span::styled(format!("{:<45} ", desc_text), desc_style);
 
-            let desc = if node.line_count > 0 {
-                format!(
-                    "{}{:>2}  {:<50} {:>10} lines  {}",
-                    marker,
-                    node.id,
-                    truncate_str(&node.description, 50),
-                    format_count(node.line_count),
-                    node.applied_at,
-                )
+            // Line count
+            let count_str = if node.line_count > 0 {
+                format!("{:>8} lines", format_count(node.line_count))
             } else {
-                format!(
-                    "{}{:>2}  {:<50} {:>10}  {}",
-                    marker,
-                    node.id,
-                    truncate_str(&node.description, 50),
-                    "",
-                    node.applied_at,
-                )
+                String::from("         ")
             };
+            let count_span = Span::styled(format!("{} ", count_str), Style::default().fg(COLOR_DIM));
 
-            Line::from(vec![
-                Span::styled(desc, style),
-            ])
+            // Timestamp
+            let ts_span = Span::styled(
+                format!("{}", node.applied_at),
+                Style::default().fg(COLOR_DIM),
+            );
+
+            // Branch labels
+            let mut label_spans: Vec<Span> = Vec::new();
+            for (bi, branch) in node.branch_labels.iter().enumerate() {
+                let is_active = *branch == current_branch;
+                let branch_color = if is_active {
+                    COLOR_ACCENT
+                } else {
+                    COLOR_HIGHLIGHT
+                };
+                label_spans.push(Span::styled(
+                    format!(" ◄{}", branch),
+                    Style::default().fg(branch_color).add_modifier(Modifier::BOLD),
+                ));
+                if bi < node.branch_labels.len() - 1 {
+                    label_spans.push(Span::raw(" "));
+                }
+            }
+
+            // HEAD marker
+            if node.is_head {
+                label_spans.push(Span::styled(
+                    " HEAD",
+                    Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD),
+                ));
+            }
+
+            // Viewed marker
+            if node.is_viewed && !node.is_head {
+                label_spans.push(Span::styled(
+                    " [view]",
+                    Style::default().fg(COLOR_HIGHLIGHT),
+                ));
+            }
+
+            spans.push(marker);
+            spans.push(id_span);
+            spans.push(desc_span);
+            spans.push(count_span);
+            spans.push(ts_span);
+            spans.extend(label_spans);
+
+            Line::from(spans)
         })
         .collect();
 
     let title = format!(
-        " Operation History — {} operations | ↑↓ select  Enter checkout  e export ",
-        app.history_nodes.len()
+        " Operation History — {} | {} ops | ↑↓ navigate  Enter view  H HEAD  e export ",
+        current_branch,
+        app.history_nodes.len().saturating_sub(1), // exclude root
     );
     let p = Paragraph::new(lines)
         .block(Block::default().borders(Borders::ALL).title(title))
@@ -396,7 +454,7 @@ fn render_analytics(f: &mut Frame, area: Rect, app: &App) {
                 stats.max_line_len,
                 stats.min_line_len,
                 stats.chunk_count,
-                repo.as_ref().map(|r: &LogRepo| r.history().len()).unwrap_or(0),
+                repo.as_ref().map(|r: &LogRepo| r.history_tree().len().saturating_sub(1)).unwrap_or(0),
             )
         }
         Err(e) => format!("Error: {}", e),
@@ -414,7 +472,7 @@ fn render_status(f: &mut Frame, area: Rect, app: &App) {
         app.repo_name,
         app.cursor_line + 1,
         app.total_lines,
-        app.repo.borrow().as_ref().map(|r: &LogRepo| r.history().len()).unwrap_or(0),
+        app.repo.borrow().as_ref().map(|r: &LogRepo| r.history_tree().len().saturating_sub(1)).unwrap_or(0),
     );
 
     let (message, msg_style) = if let Some(ref err) = app.error_message {
