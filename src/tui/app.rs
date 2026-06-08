@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use lga_core::cache::CacheManager;
@@ -8,6 +8,7 @@ use lga_core::engine::{CollectResult, Collector};
 use lga_core::error::Result;
 use lga_core::operator::Operation;
 use lga_core::repo::{LogRepo, Workspace};
+use lga_core::tag::{TagScopeRef, TagStore};
 
 use std::path::PathBuf;
 
@@ -22,6 +23,7 @@ pub enum ViewKind {
     History,
     FileBrowser,
     Help,
+    TagManager,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,9 +33,11 @@ pub enum InputMode {
     Search,
     Input,
     FileBrowser,
+    VisualSelect,
+    TagRename,
 }
 
-enum PendingOp {
+pub enum PendingOp {
     None,
     OpenRepo(String),
     ApplyOperation(Operation),
@@ -43,6 +47,14 @@ enum PendingOp {
     /// Checkout (view) a history node non-destructively
     CheckoutTo(usize),
     ExportFrom(usize, String),
+    /// Merge marked nodes
+    MergeNodes { sources: Vec<usize>, branch: String },
+    /// Subtract one node from another
+    SubtractNodes { base: usize, subtrahend: usize, branch: String },
+    /// Replay a node's operation at a different position
+    ReplayNode { source: usize, target_parent: usize, branch: String },
+    /// Soft-delete a node
+    SoftDelete { node_id: usize },
 }
 
 pub struct App {
@@ -80,6 +92,14 @@ pub struct App {
     /// Whether HEAD is detached (not on any branch).
     pub detached_head: bool,
 
+    // History node operations
+    /// Marked node IDs for multi-select merge
+    pub history_marks: HashSet<usize>,
+    /// Yanked node ID for copy/paste
+    pub yanked_node_id: Option<usize>,
+    /// Diff mode: first selected node (base)
+    pub diff_base_node_id: Option<usize>,
+
     // File browser
     pub file_browser: FileBrowser,
 
@@ -105,7 +125,20 @@ pub struct App {
     pub collect_detail: Option<String>,
     pub show_collect_detail: bool,
 
-    pending_op: PendingOp,
+    // ── Tag system ──
+
+    /// Tag store (loaded from disk)
+    pub tag_store: TagStore,
+    /// Currently active tag scope
+    pub active_tag_scope: Option<TagScopeRef>,
+    /// Visual selection start line
+    pub visual_select_start: Option<usize>,
+    /// Whether visual selection is active
+    pub visual_select_active: bool,
+    /// Cursor position in tag manager view
+    pub tag_cursor: usize,
+
+    pub pending_op: PendingOp,
 }
 
 #[derive(Clone)]
@@ -126,6 +159,10 @@ pub struct HistoryNode {
     pub is_viewed: bool,
     /// Collect result summary if a collect was run at this node.
     pub collect_summary: Option<String>,
+    /// Whether this node is soft-deleted.
+    pub deleted: bool,
+    /// Tag scope name if this node was created with a tag scope.
+    pub tag_name: Option<String>,
 }
 
 /// Detect whether the terminal locale supports UTF-8 rendering.
@@ -202,6 +239,14 @@ impl App {
             collect_results: HashMap::new(),
             collect_detail: None,
             show_collect_detail: false,
+            history_marks: HashSet::new(),
+            yanked_node_id: None,
+            diff_base_node_id: None,
+            tag_store: TagStore::load(workspace_root),
+            active_tag_scope: None,
+            visual_select_start: None,
+            visual_select_active: false,
+            tag_cursor: 0,
             pending_op: PendingOp::None,
         };
 
@@ -392,6 +437,8 @@ impl App {
                     is_head,
                     is_viewed,
                     collect_summary,
+                    deleted: entry.deleted,
+                    tag_name: entry.tag_name.clone(),
                 });
             }
         }
@@ -533,9 +580,10 @@ impl App {
             PendingOp::OpenRepo(name) => self.do_open_repo(&name),
             PendingOp::ApplyOperation(op) => {
                 let desc = op.describe();
+                let scope = self.active_tag_scope.clone();
                 let mut repo_mut = self.repo.borrow_mut();
                 if let Some(ref mut r) = *repo_mut {
-                    match r.apply_operation(op) {
+                    match r.apply_operation_scoped(op, scope) {
                         Ok(()) => {
                             self.status_message = format!("Applied: {}", desc);
                             self.line_count_is_original = false;
@@ -665,6 +713,101 @@ impl App {
                         Err(e) => {
                             self.error_message =
                                 Some(format!("Branch operation failed: {}", e));
+                        }
+                    }
+                }
+                drop(repo_mut);
+                self.refresh_line_count();
+                self.load_viewport();
+                self.re_search();
+            }
+            PendingOp::MergeNodes { sources, branch } => {
+                let mut repo_mut = self.repo.borrow_mut();
+                if let Some(ref mut r) = *repo_mut {
+                    match r.merge_nodes(&sources, &branch) {
+                        Ok(new_id) => {
+                            self.status_message = format!(
+                                "Merged {} nodes into new node {} on branch '{}'",
+                                sources.len(), new_id, branch
+                            );
+                            self.line_count_is_original = false;
+                            self.viewed_node_id = None;
+                            self.detached_head = false;
+                        }
+                        Err(e) => {
+                            self.error_message =
+                                Some(format!("Merge failed: {}", e));
+                        }
+                    }
+                }
+                self.history_marks.clear();
+                drop(repo_mut);
+                self.refresh_line_count();
+                self.load_viewport();
+                self.re_search();
+            }
+            PendingOp::SubtractNodes { base, subtrahend, branch } => {
+                let mut repo_mut = self.repo.borrow_mut();
+                if let Some(ref mut r) = *repo_mut {
+                    match r.subtract_nodes(base, subtrahend, &branch) {
+                        Ok(new_id) => {
+                            self.status_message = format!(
+                                "Subtracted node {} from node {} → new node {} on '{}'",
+                                subtrahend, base, new_id, branch
+                            );
+                            self.line_count_is_original = false;
+                            self.viewed_node_id = None;
+                            self.detached_head = false;
+                        }
+                        Err(e) => {
+                            self.error_message =
+                                Some(format!("Subtract failed: {}", e));
+                        }
+                    }
+                }
+                self.diff_base_node_id = None;
+                drop(repo_mut);
+                self.refresh_line_count();
+                self.load_viewport();
+                self.re_search();
+            }
+            PendingOp::ReplayNode { source, target_parent, branch } => {
+                let mut repo_mut = self.repo.borrow_mut();
+                if let Some(ref mut r) = *repo_mut {
+                    match r.replay_node_at(source, target_parent, &branch) {
+                        Ok(new_id) => {
+                            self.status_message = format!(
+                                "Replayed node {} at node {} → new node {} on '{}'",
+                                source, target_parent, new_id, branch
+                            );
+                            self.line_count_is_original = false;
+                            self.viewed_node_id = None;
+                            self.detached_head = false;
+                        }
+                        Err(e) => {
+                            self.error_message =
+                                Some(format!("Replay failed: {}", e));
+                        }
+                    }
+                }
+                drop(repo_mut);
+                self.refresh_line_count();
+                self.load_viewport();
+                self.re_search();
+            }
+            PendingOp::SoftDelete { node_id } => {
+                let mut repo_mut = self.repo.borrow_mut();
+                if let Some(ref mut r) = *repo_mut {
+                    match r.soft_delete_node(node_id) {
+                        Ok(()) => {
+                            self.status_message = format!(
+                                "Soft-deleted node {} (pattern preserved in history)",
+                                node_id
+                            );
+                        }
+                        Err(e) => {
+                            self.error_message =
+                                Some(format!("Delete failed: {}", e));
                         }
                     }
                 }

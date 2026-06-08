@@ -7,7 +7,7 @@ import click
 from rich.console import Console
 from rich.table import Table
 
-from lga._core import LogRepo, Workspace
+from lga._core import LogRepo, TagStore, Workspace
 
 console = Console()
 
@@ -678,6 +678,143 @@ def _format_size(size_bytes: int) -> str:
             return f"{size_bytes:.1f} {unit}"
         size_bytes /= 1024
     return f"{size_bytes:.1f} PB"
+
+
+# ---------------------------------------------------------------------------
+# node subcommand group — history node operations
+# ---------------------------------------------------------------------------
+
+@main.group()
+def node():
+    """Operate on history nodes (merge, subtract, delete)."""
+    pass
+
+
+@node.command(name="merge")
+@click.argument("source_ids", nargs=-1, type=int, required=True)
+@click.option("--branch", "-b", default=None, help="Branch name for the new node")
+@click.option("--repo", "-r", default=None, help="Repository name")
+@click.option("--workspace", "-w", default=None, help="Workspace directory")
+def node_merge(source_ids: tuple[int, ...], branch: str | None, repo: str | None, workspace: str | None):
+    """Merge multiple history nodes (OR union of line sets)."""
+    log_repo = open_repo(workspace, repo)
+    sources = list(source_ids)
+    branch_name = branch or f"merge-{'-'.join(str(s) for s in sources)}"
+    new_id = log_repo.merge_nodes(sources, branch_name)
+    console.print(f"[green]Merged {len(sources)} nodes → new node {new_id} on branch '{branch_name}'[/green]")
+
+
+@node.command(name="subtract")
+@click.argument("base_id", type=int)
+@click.argument("subtrahend_id", type=int)
+@click.option("--branch", "-b", default=None, help="Branch name for the new node")
+@click.option("--repo", "-r", default=None, help="Repository name")
+@click.option("--workspace", "-w", default=None, help="Workspace directory")
+def node_subtract(base_id: int, subtrahend_id: int, branch: str | None, repo: str | None, workspace: str | None):
+    """Subtract one node's results from another (set difference)."""
+    log_repo = open_repo(workspace, repo)
+    branch_name = branch or f"diff-{base_id}-{subtrahend_id}"
+    new_id = log_repo.subtract_nodes(base_id, subtrahend_id, branch_name)
+    console.print(f"[green]Subtracted node {subtrahend_id} from node {base_id} → new node {new_id}[/green]")
+
+
+@node.command(name="delete")
+@click.argument("node_id", type=int)
+@click.option("--repo", "-r", default=None, help="Repository name")
+@click.option("--workspace", "-w", default=None, help="Workspace directory")
+def node_delete(node_id: int, repo: str | None, workspace: str | None):
+    """Soft-delete a history node (pattern preserved in history)."""
+    log_repo = open_repo(workspace, repo)
+    log_repo.soft_delete_node(node_id)
+    console.print(f"[green]Soft-deleted node {node_id}[/green]")
+
+
+# ---------------------------------------------------------------------------
+# tag subcommand group — tag management
+# ---------------------------------------------------------------------------
+
+@main.group()
+def tag():
+    """Manage line-range tags for scoped operations."""
+    pass
+
+
+@tag.command(name="list")
+@click.option("--repo", "-r", default=None, help="Repository name")
+@click.option("--workspace", "-w", default=None, help="Workspace directory")
+def tag_list(repo: str | None, workspace: str | None):
+    """List all tags for a repository."""
+    ws_root = workspace or DEFAULT_WORKSPACE
+    ts = TagStore(ws_root)
+    name = repo or "default"
+    tags = ts.get_tags(name)
+    if not tags:
+        console.print("[dim]No tags found.[/dim]")
+        return
+    table = Table(title=f"Tags for '{name}'")
+    table.add_column("Name", style="green")
+    table.add_column("Ranges", style="cyan")
+    table.add_column("Created", style="dim")
+    for t in tags:
+        ranges_str = ", ".join(f"{s+1}-{e+1}" for s, e in t.ranges)
+        table.add_row(t.name, ranges_str, t.created_at)
+    console.print(table)
+
+
+@tag.command(name="create")
+@click.argument("name")
+@click.option("--ranges", "-R", required=True, help="Line ranges, e.g. '10-50,100-200' (1-based)")
+@click.option("--repo", "-r", default=None, help="Repository name")
+@click.option("--workspace", "-w", default=None, help="Workspace directory")
+def tag_create(name: str, ranges: str, repo: str | None, workspace: str | None):
+    """Create a new tag with named line ranges."""
+    ws_root = workspace or DEFAULT_WORKSPACE
+    ts = TagStore(ws_root)
+    repo_name = repo or "default"
+
+    # Parse ranges string like "10-50,100-200"
+    parsed = []
+    for part in ranges.split(","):
+        part = part.strip()
+        if "-" in part:
+            s, e = part.split("-", 1)
+            parsed.append((int(s.strip()) - 1, int(e.strip()) - 1))  # convert to 0-based
+        else:
+            n = int(part) - 1
+            parsed.append((n, n))
+    ts.add_tag(repo_name, name, parsed)
+    console.print(f"[green]Tag '{name}' created with ranges: {ranges}[/green]")
+
+
+@tag.command(name="delete")
+@click.argument("name")
+@click.option("--repo", "-r", default=None, help="Repository name")
+@click.option("--workspace", "-w", default=None, help="Workspace directory")
+def tag_delete(name: str, repo: str | None, workspace: str | None):
+    """Delete a tag."""
+    ws_root = workspace or DEFAULT_WORKSPACE
+    ts = TagStore(ws_root)
+    repo_name = repo or "default"
+    if ts.remove_tag(repo_name, name):
+        console.print(f"[green]Tag '{name}' deleted[/green]")
+    else:
+        console.print(f"[red]Tag '{name}' not found[/red]")
+
+
+@tag.command(name="rename")
+@click.argument("old_name")
+@click.argument("new_name")
+@click.option("--repo", "-r", default=None, help="Repository name")
+@click.option("--workspace", "-w", default=None, help="Workspace directory")
+def tag_rename(old_name: str, new_name: str, repo: str | None, workspace: str | None):
+    """Rename a tag."""
+    ws_root = workspace or DEFAULT_WORKSPACE
+    ts = TagStore(ws_root)
+    repo_name = repo or "default"
+    if ts.rename_tag(repo_name, old_name, new_name):
+        console.print(f"[green]Tag '{old_name}' → '{new_name}'[/green]")
+    else:
+        console.print(f"[red]Tag '{old_name}' not found[/red]")
 
 
 if __name__ == "__main__":

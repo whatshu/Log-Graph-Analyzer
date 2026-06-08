@@ -13,7 +13,8 @@ use crate::engine::{collector, ChunkedProcessor, CollectResult, Collector, LineS
 use crate::error::{LogAnalyzerError, Result};
 use crate::history::HistoryTree;
 use crate::index::{IndexBuilder, LineIndex};
-use crate::operator::{Operation, OperationRecord};
+use crate::operator::{InverseData, Operation, OperationRecord};
+use crate::tag::{self, TagScopeRef};
 
 /// A log repository that stores compressed log data with operation history.
 ///
@@ -410,15 +411,40 @@ impl LogRepo {
 
     /// Apply an operation to the current state (current branch HEAD).
     pub fn apply_operation(&mut self, operation: Operation) -> Result<()> {
-        // Get current lines and apply
+        self.apply_operation_scoped(operation, None)
+    }
+
+    /// Apply an operation with an optional tag scope.
+    /// When `scope` is set, only lines within the scope ranges are affected;
+    /// lines outside the scope pass through unchanged.
+    pub fn apply_operation_scoped(
+        &mut self,
+        operation: Operation,
+        scope: Option<TagScopeRef>,
+    ) -> Result<()> {
         let lines = self.get_current_lines()?;
-        let (new_lines, inverse) = operation.apply_with_inverse(lines)?;
 
-        // Add to history tree as child of current HEAD
+        let (new_lines, inverse) = if let Some(ref s) = scope {
+            // Extract scoped subset, apply op, merge back
+            let scoped = tag::filter_lines_by_ranges(&lines, &s.ranges);
+            let (scoped_new, inv) = operation.apply_with_inverse(scoped)?;
+
+            // Merge scoped result back into the full line set
+            // Build a map: for each range, which lines replace the originals
+            let new_full = merge_scoped_result(&lines, &s.ranges, &scoped_new);
+            (new_full, inv)
+        } else {
+            operation.apply_with_inverse(lines)?
+        };
+
         let head = self.history.head();
-        let new_node_id = self.history.add_child(head, operation, inverse);
+        let new_node_id = self.history.add_child_with_scope(
+            head,
+            operation,
+            inverse,
+            scope,
+        );
 
-        // Advance current branch to new node
         self.history
             .advance_branch(&self.history.current_branch.clone(), new_node_id);
         self.current_lines = Some(new_lines);
@@ -435,14 +461,32 @@ impl LogRepo {
         branch_name: &str,
         operation: Operation,
     ) -> Result<()> {
-        // Compute state at the source node
+        self.apply_operation_from_scoped(from_node_id, branch_name, operation, None)
+    }
+
+    /// Apply an operation from a specific node with optional tag scope.
+    pub fn apply_operation_from_scoped(
+        &mut self,
+        from_node_id: usize,
+        branch_name: &str,
+        operation: Operation,
+        scope: Option<TagScopeRef>,
+    ) -> Result<()> {
         let lines = self.compute_state_at(from_node_id)?;
-        let (new_lines, inverse) = operation.apply_with_inverse(lines)?;
 
-        // Add child to the source node
-        let new_node_id = self.history.add_child(from_node_id, operation, inverse);
+        let (new_lines, inverse) = if let Some(ref s) = scope {
+            let scoped = tag::filter_lines_by_ranges(&lines, &s.ranges);
+            let (scoped_new, inv) = operation.apply_with_inverse(scoped)?;
+            let new_full = merge_scoped_result(&lines, &s.ranges, &scoped_new);
+            (new_full, inv)
+        } else {
+            operation.apply_with_inverse(lines)?
+        };
 
-        // Create or use branch
+        let new_node_id =
+            self.history
+                .add_child_with_scope(from_node_id, operation, inverse, scope);
+
         if !self.history.branches.contains_key(branch_name) {
             self.history.create_branch(branch_name, from_node_id);
         }
@@ -452,6 +496,194 @@ impl LogRepo {
         self.current_lines = Some(new_lines);
         self.save_history()?;
         Ok(())
+    }
+
+    /// Merge multiple source nodes: create a new node whose state is the
+    /// UNION of all line sets at each source node.
+    ///
+    /// Lines are compared by exact string match. Returns the new node ID.
+    pub fn merge_nodes(
+        &mut self,
+        sources: &[usize],
+        branch_name: &str,
+    ) -> Result<usize> {
+        if sources.is_empty() {
+            return Err(LogAnalyzerError::Operator(
+                "Need at least one source node to merge".into(),
+            ));
+        }
+
+        let mut line_sets: Vec<Vec<String>> = Vec::new();
+        for &sid in sources {
+            line_sets.push(self.compute_state_at(sid)?);
+        }
+
+        let merged_lines = tag::union_line_sets(&line_sets);
+
+        let operation = Operation::Merge {
+            sources: sources.to_vec(),
+        };
+        let inverse = InverseData::MergeInverse {
+            source_line_sets: line_sets,
+        };
+
+        // Attach to the first source (arbitrary parent choice)
+        let parent_id = sources[0];
+        let new_node_id =
+            self.history
+                .add_child(parent_id, operation, inverse);
+
+        if !self.history.branches.contains_key(branch_name) {
+            self.history.create_branch(branch_name, parent_id);
+        }
+        self.history.advance_branch(branch_name, new_node_id);
+        self.history.checkout_branch(branch_name);
+
+        self.current_lines = Some(merged_lines);
+        self.save_history()?;
+        Ok(new_node_id)
+    }
+
+    /// Subtract one node's line set from another: create a new node with
+    /// lines that exist in `base` but NOT in `subtrahend`.
+    ///
+    /// Returns the new node ID.
+    pub fn subtract_nodes(
+        &mut self,
+        base: usize,
+        subtrahend: usize,
+        branch_name: &str,
+    ) -> Result<usize> {
+        let base_lines = self.compute_state_at(base)?;
+        let subtrahend_lines = self.compute_state_at(subtrahend)?;
+
+        let diff_lines = tag::subtract_line_sets(&base_lines, &subtrahend_lines);
+        let removed: Vec<(usize, String)> = subtrahend_lines
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (i, s.clone()))
+            .collect();
+
+        let operation = Operation::Subtract { base, subtrahend };
+        let inverse = InverseData::SubtractInverse { removed };
+
+        let new_node_id = self.history.add_child(base, operation, inverse);
+
+        if !self.history.branches.contains_key(branch_name) {
+            self.history.create_branch(branch_name, base);
+        }
+        self.history.advance_branch(branch_name, new_node_id);
+        self.history.checkout_branch(branch_name);
+
+        self.current_lines = Some(diff_lines);
+        self.save_history()?;
+        Ok(new_node_id)
+    }
+
+    /// Replay (copy) a source node's operation at a different position in
+    /// the tree. The source node must have a replayable operation (Filter,
+    /// Replace, DeleteLines, InsertLines, or ModifyLine).
+    ///
+    /// Returns the new node ID.
+    pub fn replay_node_at(
+        &mut self,
+        source_node_id: usize,
+        target_parent_id: usize,
+        branch_name: &str,
+    ) -> Result<usize> {
+        let src_node = self
+            .history
+            .get_node(source_node_id)
+            .ok_or_else(|| {
+                LogAnalyzerError::Repo(format!(
+                    "Source node {} not found",
+                    source_node_id
+                ))
+            })?;
+
+        let src_op = src_node
+            .operation
+            .as_ref()
+            .ok_or_else(|| {
+                LogAnalyzerError::Operator(
+                    "Source node has no operation to replay".into(),
+                )
+            })?;
+
+        // Validate that the source operation is replayable
+        match src_op {
+            Operation::Merge { .. } | Operation::Subtract { .. } | Operation::Replay { .. } => {
+                return Err(LogAnalyzerError::Operator(
+                    "Cannot replay Merge/Subtract/Replay operations".into(),
+                ));
+            }
+            _ => {} // OK — Filter, Replace, DeleteLines, InsertLines, ModifyLine
+        }
+
+        // Compute state at target parent
+        let target_lines = self.compute_state_at(target_parent_id)?;
+
+        // Apply source operation to target state
+        // We need to handle tag scope from the source node
+        let (new_lines, inverse) = if let Some(ref scope) = src_node.tag_scope {
+            let scoped = tag::filter_lines_by_ranges(&target_lines, &scope.ranges);
+            let (scoped_new, inv) = src_op.apply_with_inverse(scoped)?;
+            let new_full = merge_scoped_result(&target_lines, &scope.ranges, &scoped_new);
+            (new_full, inv)
+        } else {
+            src_op.apply_with_inverse(target_lines)?
+        };
+
+        let operation = Operation::Replay {
+            source_node_id,
+        };
+        let replay_inverse = InverseData::ReplayInverse {
+            inner: Box::new(inverse),
+        };
+
+        // Preserve tag scope from source node
+        let tag_scope = src_node.tag_scope.clone();
+
+        let new_node_id = self.history.add_child_with_scope(
+            target_parent_id,
+            operation,
+            replay_inverse,
+            tag_scope,
+        );
+
+        if !self.history.branches.contains_key(branch_name) {
+            self.history.create_branch(branch_name, target_parent_id);
+        }
+        self.history.advance_branch(branch_name, new_node_id);
+        self.history.checkout_branch(branch_name);
+
+        self.current_lines = Some(new_lines);
+        self.save_history()?;
+        Ok(new_node_id)
+    }
+
+    /// Soft-delete a history node. The node is marked deleted and its
+    /// children are reparented to its parent. Branch pointers are updated.
+    ///
+    /// The root node cannot be deleted.
+    pub fn soft_delete_node(&mut self, node_id: usize) -> Result<()> {
+        self.history
+            .soft_delete(node_id)
+            .map_err(|msg| LogAnalyzerError::Repo(msg))?;
+
+        // Invalidate cache since tree structure changed
+        self.current_lines = None;
+        self.save_history()?;
+        Ok(())
+    }
+
+    /// Filter lines to only those within the given tag scope ranges.
+    pub fn filter_by_scope(
+        &self,
+        lines: &[String],
+        scope: &TagScopeRef,
+    ) -> Vec<String> {
+        tag::filter_lines_by_ranges(lines, &scope.ranges)
     }
 
     /// Undo the last operation on the current branch.
@@ -595,6 +827,51 @@ impl LogRepo {
         fs::write(self.path.join("meta.json"), json)?;
         Ok(())
     }
+}
+
+/// Merge scoped operation results back into the full line set.
+///
+/// Takes the original lines, the ranges that were operated on, and the
+/// resulting scoped lines, and produces the full merged result.
+/// Lines outside the scoped ranges pass through unchanged.  Within each
+/// range, the scoped result lines replace the original range lines (the
+/// count may differ if lines were filtered out).
+fn merge_scoped_result(
+    original: &[String],
+    ranges: &[(usize, usize)],
+    scoped_new: &[String],
+) -> Vec<String> {
+    // Build a set of all line indices that are within any range.
+    use std::collections::HashSet;
+    let in_scope: HashSet<usize> = ranges
+        .iter()
+        .flat_map(|&(s, e)| {
+            let end = (e + 1).min(original.len());
+            s.min(original.len())..end
+        })
+        .collect();
+
+    let mut result = Vec::with_capacity(
+        original.len() - in_scope.len() + scoped_new.len(),
+    );
+    let mut scoped_idx = 0usize;
+
+    // Walk through original lines. If a line is in scope, emit the
+    // next scoped result line (if any). Otherwise emit the original.
+    for (i, line) in original.iter().enumerate() {
+        if in_scope.contains(&i) {
+            if scoped_idx < scoped_new.len() {
+                result.push(scoped_new[scoped_idx].clone());
+                scoped_idx += 1;
+            }
+            // If we've consumed all scoped result lines, skip remaining
+            // in-scope originals (they were filtered out or replaced).
+        } else {
+            result.push(line.clone());
+        }
+    }
+
+    result
 }
 
 pub(crate) fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {

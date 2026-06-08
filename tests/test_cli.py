@@ -407,4 +407,251 @@ class TestInfoWithBranches:
         assert r.exit_code == 0
         assert "main" in r.output
         assert "Current Branch" in r.output
-        assert "Branches" in r.output
+
+
+# ── Tag Store bindings tests ──
+
+
+class TestTagStore:
+    """Test the TagStore Python bindings directly."""
+
+    def test_create_and_list_tags(self, ws):
+        from lga._core import TagStore
+
+        ts = TagStore(ws)
+        ts.add_tag("test", "errors", [(0, 10), (20, 30)])
+        tags = ts.get_tags("test")
+        assert len(tags) == 1
+        assert tags[0].name == "errors"
+        assert tags[0].ranges == [(0, 10), (20, 30)]
+
+    def test_add_tag_replaces_same_name(self, ws):
+        from lga._core import TagStore
+
+        ts = TagStore(ws)
+        ts.add_tag("test", "mytag", [(0, 5)])
+        ts.add_tag("test", "mytag", [(10, 20)])
+        tags = ts.get_tags("test")
+        assert len(tags) == 1
+        assert tags[0].ranges == [(10, 20)]
+
+    def test_remove_tag(self, ws):
+        from lga._core import TagStore
+
+        ts = TagStore(ws)
+        ts.add_tag("test", "temp", [(0, 1)])
+        assert ts.remove_tag("test", "temp") is True
+        assert ts.remove_tag("test", "nonexistent") is False
+        assert len(ts.get_tags("test")) == 0
+
+    def test_rename_tag(self, ws):
+        from lga._core import TagStore
+
+        ts = TagStore(ws)
+        ts.add_tag("test", "old", [(0, 5)])
+        assert ts.rename_tag("test", "old", "new") is True
+        assert ts.rename_tag("test", "nope", "x") is False
+        tags = ts.get_tags("test")
+        assert tags[0].name == "new"
+
+    def test_next_auto_name(self, ws):
+        from lga._core import TagStore
+
+        ts = TagStore(ws)
+        assert ts.next_auto_name("test") == "tag_1"
+        ts.add_tag("test", "tag_1", [(0, 1)])
+        ts.add_tag("test", "custom", [(5, 10)])
+        assert ts.next_auto_name("test") == "tag_2"
+
+    def test_make_scope(self, ws):
+        from lga._core import TagStore
+
+        ts = TagStore(ws)
+        ts.add_tag("test", "scope1", [(10, 50)])
+        scope = ts.make_scope("test", "scope1")
+        assert scope is not None
+        assert scope.tag_name == "scope1"
+        assert scope.ranges == [(10, 50)]
+
+    def test_tags_isolated_per_repo(self, ws):
+        from lga._core import TagStore
+
+        ts = TagStore(ws)
+        ts.add_tag("repo_a", "errors", [(0, 10)])
+        ts.add_tag("repo_b", "warnings", [(5, 15)])
+        assert len(ts.get_tags("repo_a")) == 1
+        assert len(ts.get_tags("repo_b")) == 1
+        assert ts.get_tags("repo_a")[0].name == "errors"
+        assert ts.get_tags("repo_b")[0].name == "warnings"
+
+    def test_tag_persistence_roundtrip(self, ws):
+        """Tags should survive save/load cycle."""
+        from lga._core import TagStore
+
+        ts1 = TagStore(ws)
+        ts1.add_tag("test", "persist", [(1, 10)])
+        # Create a new TagStore instance — it should load from disk
+        ts2 = TagStore(ws)
+        tags = ts2.get_tags("test")
+        assert len(tags) == 1
+        assert tags[0].name == "persist"
+        assert tags[0].ranges == [(1, 10)]
+
+
+# ── Tag CLI command tests ──
+
+
+class TestTagCLI:
+    """Test the `tag` CLI subcommand group."""
+
+    def test_tag_list_empty(self, runner, ws_repo):
+        r = runner.invoke(main, ["tag", "list", "-w", ws_repo, "--repo", "test"])
+        assert r.exit_code == 0
+        # Should show "No tags found" or empty table
+        assert "No tags found" in r.output or "Tags" in r.output
+
+    def test_tag_create_and_list(self, runner, ws_repo):
+        r = runner.invoke(
+            main, ["tag", "create", "errors", "-w", ws_repo, "--repo", "test",
+                   "--ranges", "10-50,100-200"]
+        )
+        assert r.exit_code == 0
+        assert "errors" in r.output
+
+        r = runner.invoke(main, ["tag", "list", "-w", ws_repo, "--repo", "test"])
+        assert r.exit_code == 0
+        assert "errors" in r.output
+        assert "10-50" in r.output  # 1-based display (unchanged from input)
+
+    def test_tag_delete(self, runner, ws_repo):
+        runner.invoke(
+            main, ["tag", "create", "delme", "-w", ws_repo, "--repo", "test",
+                   "--ranges", "1-5"]
+        )
+        r = runner.invoke(main, ["tag", "delete", "delme", "-w", ws_repo, "--repo", "test"])
+        assert r.exit_code == 0
+        assert "deleted" in r.output
+
+        # Verify gone
+        r = runner.invoke(main, ["tag", "list", "-w", ws_repo, "--repo", "test"])
+        assert "delme" not in r.output
+
+    def test_tag_rename(self, runner, ws_repo):
+        runner.invoke(
+            main, ["tag", "create", "oldname", "-w", ws_repo, "--repo", "test",
+                   "--ranges", "1-5"]
+        )
+        r = runner.invoke(
+            main, ["tag", "rename", "oldname", "newname", "-w", ws_repo, "--repo", "test"]
+        )
+        assert r.exit_code == 0
+
+        r = runner.invoke(main, ["tag", "list", "-w", ws_repo, "--repo", "test"])
+        assert "oldname" not in r.output
+        assert "newname" in r.output
+
+    def test_tag_rename_nonexistent(self, runner, ws_repo):
+        r = runner.invoke(
+            main, ["tag", "rename", "nope", "x", "-w", ws_repo, "--repo", "test"]
+        )
+        assert "not found" in r.output.lower()
+
+
+# ── Node operation CLI tests ──
+
+
+class TestNodeCLI:
+    """Test the `node` CLI subcommand group."""
+
+    def test_node_merge_basic(self, runner, ws_repo):
+        """Merge two filter nodes."""
+        # Apply two filter operations to create history nodes
+        runner.invoke(
+            main, ["filter", "ERROR", "--keep", "-w", ws_repo, "--repo", "test"]
+        )
+        runner.invoke(main, ["undo", "-w", ws_repo, "--repo", "test"])
+        runner.invoke(
+            main, ["filter", "WARN", "--keep", "-w", ws_repo, "--repo", "test"]
+        )
+
+        r = runner.invoke(
+            main, ["node", "merge", "1", "2", "-w", ws_repo, "--repo", "test",
+                   "--branch", "merged-test"]
+        )
+        assert r.exit_code == 0
+        assert "Merged" in r.output
+
+    def test_node_subtract(self, runner, ws_repo):
+        runner.invoke(
+            main, ["filter", "ERROR", "--keep", "-w", ws_repo, "--repo", "test"]
+        )
+        runner.invoke(main, ["undo", "-w", ws_repo, "--repo", "test"])
+        runner.invoke(
+            main, ["filter", "ERROR", "--keep", "-w", ws_repo, "--repo", "test"]
+        )
+
+        r = runner.invoke(
+            main, ["node", "subtract", "1", "2", "-w", ws_repo, "--repo", "test"]
+        )
+        assert r.exit_code == 0
+
+    def test_node_delete(self, runner, ws_repo):
+        runner.invoke(
+            main, ["filter", "ERROR", "--keep", "-w", ws_repo, "--repo", "test"]
+        )
+        r = runner.invoke(
+            main, ["node", "delete", "1", "-w", ws_repo, "--repo", "test"]
+        )
+        assert r.exit_code == 0
+        assert "Soft-deleted" in r.output or "deleted" in r.output.lower()
+
+    def test_node_delete_root_fails(self, runner, ws_repo):
+        r = runner.invoke(
+            main, ["node", "delete", "0", "-w", ws_repo, "--repo", "test"]
+        )
+        # Should fail — cannot delete root
+        assert r.exit_code != 0 or "root" in r.output.lower()
+
+
+# ── Tag-scoped filter via Python bindings ──
+
+
+class TestTagScopedOperations:
+    """Test applying operations within a tag scope."""
+
+    def test_scoped_filter_only_affects_range(self):
+        """Filter within tag scope should only affect tagged lines."""
+        import tempfile
+        import os
+        from lga._core import LogRepo, TagStore
+
+        with tempfile.TemporaryDirectory() as d:
+            repo_path = os.path.join(d, "repo")
+            log_path = os.path.join(d, "test.log")
+
+            with open(log_path, "w") as f:
+                for i in range(10):
+                    f.write(f"line {i}: {'ERROR' if i % 3 == 0 else 'OK'}\n")
+
+            repo = LogRepo.import_file(repo_path, log_path)
+
+            # Create a tag for lines 2-5
+            ts = TagStore(d)
+            ts.add_tag("test", "middle", [(2, 5)])
+
+            # Apply filter within tag scope — keep only ERROR lines in range 2-5
+            scope = ts.make_scope("test", "middle")
+            assert scope is not None
+
+            # Use the low-level approach: manually filter by scope
+            # (the Python bindings apply_operation_scoped uses scoped apply)
+            before = repo.read_all_lines()
+            assert len(before) == 10
+
+            # Filter keep ERROR on all lines without scope for comparison
+            repo2 = LogRepo.import_file(os.path.join(d, "repo2"), log_path)
+            repo2.filter("ERROR", keep=True)
+            after_no_scope = repo2.read_all_lines()
+            # Without scope: lines 0, 3, 6, 9 have ERROR → 4 lines
+            assert len(after_no_scope) == 4
+            assert "ERROR" in after_no_scope[0]

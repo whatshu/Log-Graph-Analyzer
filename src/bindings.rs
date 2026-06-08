@@ -257,6 +257,45 @@ impl PyLogRepo {
         self.inner.history_tree().is_empty()
     }
 
+    // ── History node operations ──
+
+    /// Merge multiple source nodes: create a new node whose state is the
+    /// UNION of all line sets at each source node. Returns new node ID.
+    fn merge_nodes(&mut self, sources: Vec<usize>, branch_name: &str) -> PyResult<usize> {
+        Ok(self.inner.merge_nodes(&sources, branch_name)?)
+    }
+
+    /// Subtract one node's line set from another. Returns new node ID.
+    fn subtract_nodes(
+        &mut self,
+        base: usize,
+        subtrahend: usize,
+        branch_name: &str,
+    ) -> PyResult<usize> {
+        Ok(self
+            .inner
+            .subtract_nodes(base, subtrahend, branch_name)?)
+    }
+
+    /// Replay (copy) a source node's operation at a different tree position.
+    /// Returns new node ID.
+    fn replay_node_at(
+        &mut self,
+        source_node_id: usize,
+        target_parent_id: usize,
+        branch_name: &str,
+    ) -> PyResult<usize> {
+        Ok(self
+            .inner
+            .replay_node_at(source_node_id, target_parent_id, branch_name)?)
+    }
+
+    /// Soft-delete a history node. The node is marked deleted but kept
+    /// in the tree for reference.
+    fn soft_delete_node(&mut self, node_id: usize) -> PyResult<()> {
+        Ok(self.inner.soft_delete_node(node_id)?)
+    }
+
     // --- Streaming engine methods (memory-efficient for large files) ---
 
     /// Count lines matching a regex in the original data.
@@ -813,5 +852,125 @@ impl PyWorkspace {
     /// Workspace root path.
     fn root(&self) -> String {
         self.inner.root().to_string_lossy().to_string()
+    }
+}
+
+/// Python wrapper for TagStore — manages named line-range tags.
+#[pyclass(name = "TagStore")]
+pub struct PyTagStore {
+    inner: crate::tag::TagStore,
+    workspace_root: PathBuf,
+}
+
+#[pymethods]
+impl PyTagStore {
+    /// Create a new TagStore, loading existing tags from the workspace.
+    #[new]
+    fn new(workspace_root: &str) -> Self {
+        let root = PathBuf::from(workspace_root);
+        let inner = crate::tag::TagStore::load(&root);
+        Self {
+            inner,
+            workspace_root: root,
+        }
+    }
+
+    /// Get all tags for a repo as a list of dicts.
+    fn get_tags(&self, repo_name: &str) -> Vec<PyTag> {
+        self.inner
+            .get_tags(repo_name)
+            .iter()
+            .map(|t| PyTag {
+                name: t.name.clone(),
+                ranges: t.ranges.clone(),
+                created_at: t.created_at.to_rfc3339(),
+            })
+            .collect()
+    }
+
+    /// Add a tag for a repo (replaces existing tag with same name).
+    /// `ranges` is a list of (start, end) inclusive 0-based line pairs.
+    fn add_tag(&mut self, repo_name: &str, name: &str, ranges: Vec<(usize, usize)>) -> PyResult<()> {
+        let tag = crate::tag::Tag {
+            name: name.to_string(),
+            ranges,
+            created_at: chrono::Utc::now(),
+        };
+        self.inner.add_tag(repo_name, tag);
+        self.inner.save(&self.workspace_root)?;
+        Ok(())
+    }
+
+    /// Remove a tag by name. Returns true if the tag existed.
+    fn remove_tag(&mut self, repo_name: &str, name: &str) -> PyResult<bool> {
+        let existed = self.inner.remove_tag(repo_name, name);
+        if existed {
+            self.inner.save(&self.workspace_root)?;
+        }
+        Ok(existed)
+    }
+
+    /// Rename a tag. Returns true if the tag existed.
+    fn rename_tag(&mut self, repo_name: &str, old_name: &str, new_name: &str) -> PyResult<bool> {
+        let existed = self.inner.rename_tag(repo_name, old_name, new_name);
+        if existed {
+            self.inner.save(&self.workspace_root)?;
+        }
+        Ok(existed)
+    }
+
+    /// Get next auto-numbered tag name (tag_1, tag_2, ...).
+    fn next_auto_name(&self, repo_name: &str) -> String {
+        self.inner.next_auto_name(repo_name)
+    }
+
+    /// Build a scope dict from a tag name for use with operations.
+    fn make_scope(&self, repo_name: &str, tag_name: &str) -> Option<PyTagScope> {
+        self.inner.make_scope(repo_name, tag_name).map(|s| PyTagScope {
+            tag_name: s.tag_name,
+            ranges: s.ranges,
+        })
+    }
+}
+
+/// Python-visible tag info.
+#[pyclass(name = "Tag", from_py_object)]
+#[derive(Clone)]
+pub struct PyTag {
+    #[pyo3(get)]
+    name: String,
+    #[pyo3(get)]
+    ranges: Vec<(usize, usize)>,
+    #[pyo3(get)]
+    created_at: String,
+}
+
+#[pymethods]
+impl PyTag {
+    fn __repr__(&self) -> String {
+        format!(
+            "Tag(name='{}', ranges={:?}, at='{}')",
+            self.name, self.ranges, self.created_at
+        )
+    }
+}
+
+/// A tag scope reference to pass to scoped operations.
+#[pyclass(name = "TagScope", from_py_object)]
+#[derive(Clone)]
+pub struct PyTagScope {
+    #[pyo3(get)]
+    tag_name: String,
+    #[pyo3(get)]
+    ranges: Vec<(usize, usize)>,
+}
+
+#[pymethods]
+impl PyTagScope {
+    fn __repr__(&self) -> String {
+        format!(
+            "TagScope(name='{}', ranges={:?})",
+            self.tag_name, self.ranges
+        )
     }
 }

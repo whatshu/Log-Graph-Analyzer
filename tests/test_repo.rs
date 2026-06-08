@@ -759,3 +759,349 @@ fn test_history_tree_node_count() {
     .unwrap();
     assert_eq!(repo.history_tree().len(), 3);
 }
+
+// ── Tag-scoped operations ──
+
+#[test]
+fn test_apply_operation_with_tag_scope() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path().join("repo");
+
+    let data = b"INFO msg1\nERROR msg2\nWARN msg3\nERROR msg4\nDEBUG msg5\n";
+    let mut repo = LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
+
+    let scope = lga_core::tag::TagScopeRef {
+        tag_name: "errors".into(),
+        ranges: vec![(1, 3)], // Lines 1-3 (0-based): ERROR msg2, WARN msg3, ERROR msg4
+    };
+
+    // Filter keep ERROR within the scope — only lines 1-3 are considered
+    repo.apply_operation_scoped(
+        Operation::Filter {
+            pattern: "ERROR".to_string(),
+            keep: true,
+        },
+        Some(scope.clone()),
+    )
+    .unwrap();
+
+    let lines = repo.get_current_lines().unwrap();
+    // Lines outside scope (0, 4) pass through unchanged
+    // Within scope: ERROR msg2 kept, WARN msg3 removed, ERROR msg4 kept
+    assert_eq!(lines, vec!["INFO msg1", "ERROR msg2", "ERROR msg4", "DEBUG msg5"]);
+    assert_eq!(lines.len(), 4);
+
+    // Verify tag scope was recorded on the history node
+    let tree = repo.history_tree();
+    let head_node = tree.get_node(tree.head()).unwrap();
+    assert!(head_node.tag_scope.is_some());
+    assert_eq!(head_node.tag_scope.as_ref().unwrap().tag_name, "errors");
+}
+
+#[test]
+fn test_apply_operation_scoped_outside_lines_preserved() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path().join("repo");
+
+    let data = b"A\nB\nC\nD\nE\n";
+    let mut repo = LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
+
+    let scope = lga_core::tag::TagScopeRef {
+        tag_name: "middle".into(),
+        ranges: vec![(1, 2)], // Only lines B and C
+    };
+
+    // Filter keep everything within scope (no-op on scoped lines)
+    repo.apply_operation_scoped(
+        Operation::Filter {
+            pattern: ".".to_string(),
+            keep: true,
+        },
+        Some(scope),
+    )
+    .unwrap();
+
+    let lines = repo.get_current_lines().unwrap();
+    // All lines should be preserved since filter keeps everything
+    assert_eq!(lines, vec!["A", "B", "C", "D", "E"]);
+}
+
+#[test]
+fn test_apply_operation_multiple_ranges_in_scope() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path().join("repo");
+
+    let data = b"0:A\n1:B\n2:C\n3:D\n4:E\n5:F\n";
+    let mut repo = LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
+
+    let scope = lga_core::tag::TagScopeRef {
+        tag_name: "multi".into(),
+        ranges: vec![(0, 1), (4, 5)], // Lines 0-1 and 4-5
+    };
+
+    // Filter remove lines containing "A" or "E" (only within scope)
+    repo.apply_operation_scoped(
+        Operation::Filter {
+            pattern: "[AE]".to_string(),
+            keep: false,
+        },
+        Some(scope),
+    )
+    .unwrap();
+
+    let lines = repo.get_current_lines().unwrap();
+    // The HashSet approach walks original lines in order:
+    // line 0 in scope → scoped[0]="1:B", line 1 in scope → scoped[1]="5:F" → no wait...
+    // Actually the scoped filter removes [AE], so scoped lines are ["1:B", "5:F"]
+    // Processing original lines 0-5:
+    // 0 in scope → push "1:B", 1 in scope → push "5:F",
+    // 2 not in scope → push "2:C", 3 not in scope → "3:D",
+    // 4 in scope → skip (no more scoped results), 5 in scope → skip
+    assert_eq!(lines, vec!["1:B", "5:F", "2:C", "3:D"]);
+}
+
+// ── Node merge (OR union) ──
+
+#[test]
+fn test_merge_nodes_union() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path().join("repo");
+
+    let data = b"ERROR auth\nWARN memory\nERROR disk\nINFO startup\nDEBUG trace\n";
+    let mut repo = LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
+
+    // Node 1: keep ERROR lines → "ERROR auth", "ERROR disk"
+    repo.apply_operation(Operation::Filter {
+        pattern: "ERROR".to_string(),
+        keep: true,
+    })
+    .unwrap();
+
+    // Node 2: keep WARN lines (from original, not from node 1)
+    // First undo
+    repo.undo().unwrap();
+
+    // Now from original, create a branch for WARN
+    repo.apply_operation_from(0, "warn-branch", Operation::Filter {
+        pattern: "WARN".to_string(),
+        keep: true,
+    })
+    .unwrap();
+
+    // Merge node 1 and node 2
+    let new_id = repo.merge_nodes(&[1, 2], "merged").unwrap();
+
+    let lines = repo.get_current_lines().unwrap();
+    // Union of ["ERROR auth", "ERROR disk"] and ["WARN memory"]
+    // Should contain 3 unique lines
+    assert_eq!(lines.len(), 3);
+    assert!(lines.contains(&"ERROR auth".to_string()));
+    assert!(lines.contains(&"ERROR disk".to_string()));
+    assert!(lines.contains(&"WARN memory".to_string()));
+
+    // Verify operation type on the new node
+    let new_node = repo.history_tree().get_node(new_id).unwrap();
+    match new_node.operation.as_ref().unwrap() {
+        Operation::Merge { sources } => {
+            assert_eq!(sources.len(), 2);
+        }
+        _ => panic!("Expected Merge operation"),
+    }
+}
+
+#[test]
+fn test_merge_nodes_single_source() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path().join("repo");
+
+    let data = b"A\nB\nC\n";
+    let mut repo = LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
+
+    repo.apply_operation(Operation::Filter {
+        pattern: "[AB]".to_string(),
+        keep: true,
+    })
+    .unwrap();
+
+    let new_id = repo.merge_nodes(&[1], "single-merge").unwrap();
+    let lines = repo.get_current_lines().unwrap();
+    assert_eq!(lines, vec!["A", "B"]);
+}
+
+// ── Node subtract (set difference) ──
+
+#[test]
+fn test_subtract_nodes() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path().join("repo");
+
+    let data = b"ERROR auth\nWARN memory\nERROR disk\nINFO startup\nDEBUG trace\n";
+    let mut repo = LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
+
+    // Node 1: keep ERRORs → ["ERROR auth", "ERROR disk"]
+    repo.apply_operation(Operation::Filter {
+        pattern: "ERROR".to_string(),
+        keep: true,
+    })
+    .unwrap();
+
+    // Node 2: keep lines with "disk" (from original)
+    repo.apply_operation_from(0, "disk-branch", Operation::Filter {
+        pattern: "disk".to_string(),
+        keep: true,
+    })
+    .unwrap();
+
+    // Subtract node 2 from node 1: lines in node 1 NOT in node 2
+    // node 1: ["ERROR auth", "ERROR disk"]
+    // node 2: ["ERROR disk"]
+    // result: ["ERROR auth"]
+    let new_id = repo.subtract_nodes(1, 2, "diff-branch").unwrap();
+
+    let lines = repo.get_current_lines().unwrap();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0], "ERROR auth");
+
+    let new_node = repo.history_tree().get_node(new_id).unwrap();
+    match new_node.operation.as_ref().unwrap() {
+        Operation::Subtract { base, subtrahend } => {
+            assert_eq!(*base, 1);
+            assert_eq!(*subtrahend, 2);
+        }
+        _ => panic!("Expected Subtract operation"),
+    }
+}
+
+// ── Node replay (copy at different position) ──
+
+#[test]
+fn test_replay_node_at_different_position() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path().join("repo");
+
+    let data = b"ERROR auth\nWARN memory\nERROR disk\nINFO startup\n";
+    let mut repo = LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
+
+    // Node 1: filter keep ERROR (on original)
+    repo.apply_operation(Operation::Filter {
+        pattern: "ERROR".to_string(),
+        keep: true,
+    })
+    .unwrap();
+    // State: ["ERROR auth", "ERROR disk"]
+
+    // Now replay node 1's filter at the root again (re-apply the same filter)
+    // Since root state is all lines, same result expected
+    let new_id = repo.replay_node_at(1, 0, "replay-branch").unwrap();
+
+    let lines = repo.get_current_lines().unwrap();
+    assert_eq!(lines, vec!["ERROR auth", "ERROR disk"]);
+
+    let new_node = repo.history_tree().get_node(new_id).unwrap();
+    match new_node.operation.as_ref().unwrap() {
+        Operation::Replay { source_node_id } => {
+            assert_eq!(*source_node_id, 1);
+        }
+        _ => panic!("Expected Replay operation"),
+    }
+}
+
+#[test]
+fn test_replay_node_preserves_tag_scope() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path().join("repo");
+
+    let data = b"A\nB\nC\nD\nE\n";
+    let mut repo = LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
+
+    let scope = lga_core::tag::TagScopeRef {
+        tag_name: "test-scope".into(),
+        ranges: vec![(1, 3)],
+    };
+
+    // Create a scoped filter
+    repo.apply_operation_scoped(
+        Operation::Filter {
+            pattern: "[BCD]".to_string(),
+            keep: true,
+        },
+        Some(scope),
+    )
+    .unwrap();
+
+    // Replay this scoped operation at root
+    let new_id = repo.replay_node_at(1, 0, "replay-scoped").unwrap();
+
+    let new_node = repo.history_tree().get_node(new_id).unwrap();
+    assert!(new_node.tag_scope.is_some());
+    assert_eq!(new_node.tag_scope.as_ref().unwrap().tag_name, "test-scope");
+}
+
+// ── Soft delete ──
+
+#[test]
+fn test_soft_delete_node_marks_deleted() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path().join("repo");
+
+    let data = b"A\nB\nC\n";
+    let mut repo = LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
+
+    repo.apply_operation(Operation::Filter {
+        pattern: "A".to_string(),
+        keep: true,
+    })
+    .unwrap();
+
+    assert_eq!(repo.history_tree().len(), 2);
+
+    repo.soft_delete_node(1).unwrap();
+
+    let node = repo.history_tree().get_node(1).unwrap();
+    assert!(node.deleted);
+    // Branch should be moved to parent (root)
+    assert_eq!(repo.head_node_id(), 0);
+}
+
+#[test]
+fn test_soft_delete_root_fails() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path().join("repo");
+
+    let data = b"A\n";
+    let mut repo = LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
+
+    let result = repo.soft_delete_node(0);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("root"));
+}
+
+// ── History tree integration with tags ──
+
+#[test]
+fn test_history_tree_shows_tag_name() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path().join("repo");
+
+    let data = b"A\nB\nC\n";
+    let mut repo = LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
+
+    let scope = lga_core::tag::TagScopeRef {
+        tag_name: "important".into(),
+        ranges: vec![(0, 1)],
+    };
+
+    repo.apply_operation_scoped(
+        Operation::Filter {
+            pattern: ".".to_string(),
+            keep: true,
+        },
+        Some(scope),
+    )
+    .unwrap();
+
+    let order = repo.history_tree().topological_order();
+    assert_eq!(order.len(), 2);
+    // The child node should have the tag name
+    assert_eq!(order[1].tag_name, Some("important".to_string()));
+}

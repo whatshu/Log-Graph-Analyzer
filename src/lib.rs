@@ -22,5 +22,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<bindings::PyOperationRecord>()?;
     m.add_class::<bindings::PyLogStats>()?;
     m.add_class::<bindings::PyWorkspace>()?;
+    m.add_class::<bindings::PyTagStore>()?;
+    m.add_class::<bindings::PyTag>()?;
+    m.add_class::<bindings::PyTagScope>()?;
     Ok(())
 }

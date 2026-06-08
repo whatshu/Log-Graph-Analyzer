@@ -238,9 +238,10 @@ impl HistoryTree {
 
     // ── Node manipulation ──
 
-    /// Soft-delete a node: mark it `deleted` and reparent its children
-    /// to the deleted node's parent. Branches pointing to the deleted node
-    /// are moved to its parent.
+    /// Soft-delete a node: mark it `deleted` and move any branches
+    /// pointing to this node to its parent. The node remains in the
+    /// tree so it can still be displayed (dimmed) and its patterns
+    /// remain accessible via search history.
     ///
     /// The root node (id=0) cannot be deleted.
     /// Returns an error message if the node doesn't exist or is root.
@@ -254,35 +255,9 @@ impl HistoryTree {
             .ok_or_else(|| format!("Node {} not found", node_id))?
             .parent_id;
 
-        let children: Vec<usize> = self
-            .get_node(node_id)
-            .map(|n| n.children_ids.clone())
-            .unwrap_or_default();
-
         // Mark the node as deleted
         if let Some(node) = self.get_node_mut(node_id) {
             node.deleted = true;
-        }
-
-        // Reparent all children to the deleted node's parent
-        if let Some(pid) = parent_id {
-            for &child_id in &children {
-                if let Some(child) = self.get_node_mut(child_id) {
-                    child.parent_id = Some(pid);
-                }
-            }
-            // Add children to parent's children list
-            if let Some(parent) = self.get_node_mut(pid) {
-                parent.children_ids.retain(|&id| id != node_id);
-                parent.children_ids.extend(&children);
-            }
-        } else {
-            // Node had no parent (shouldn't happen for non-root, but handle gracefully)
-            for &child_id in &children {
-                if let Some(child) = self.get_node_mut(child_id) {
-                    child.parent_id = None;
-                }
-            }
         }
 
         // Move branches pointing to this node to parent
@@ -654,5 +629,117 @@ mod tests {
 
         let path = tree.path_to(0);
         assert_eq!(path, vec![0]);
+    }
+
+    #[test]
+    fn test_soft_delete_marks_deleted() {
+        let mut tree = HistoryTree::new();
+        let (op1, inv1) = make_filter_op();
+        let id1 = tree.add_child(0, op1, inv1);
+
+        tree.soft_delete(id1).unwrap();
+
+        assert!(tree.get_node(id1).unwrap().deleted);
+        // Branch should be moved to parent (root)
+        assert_eq!(tree.head(), 0);
+    }
+
+    #[test]
+    fn test_soft_delete_no_children_reparent() {
+        let mut tree = HistoryTree::new();
+        let (op1, inv1) = make_filter_op();
+        let id1 = tree.add_child(0, op1, inv1.clone());
+        tree.advance_branch("main", id1);
+
+        let (op2, inv2) = make_filter_op();
+        let id2 = tree.add_child(id1, op2, inv2);
+        tree.advance_branch("main", id2);
+
+        // Soft delete node 1 — children stay connected
+        tree.soft_delete(1).unwrap();
+
+        assert!(tree.get_node(1).unwrap().deleted);
+        // Node 2's parent should still be 1 (tree structure preserved)
+        assert_eq!(tree.get_node(2).unwrap().parent_id, Some(1));
+        // Root should still have node 1 as child
+        assert!(tree.nodes[0].children_ids.contains(&1));
+        // Branch still points to 2 (wasn't pointing to deleted node)
+        assert_eq!(tree.head(), 2);
+    }
+
+    #[test]
+    fn test_soft_delete_root_fails() {
+        let mut tree = HistoryTree::new();
+        assert!(tree.soft_delete(0).is_err());
+    }
+
+    #[test]
+    fn test_is_ancestor() {
+        let mut tree = HistoryTree::new();
+        let (op, inv) = make_filter_op();
+        let id1 = tree.add_child(0, op, inv);
+        let (op2, inv2) = make_filter_op();
+        let id2 = tree.add_child(id1, op2, inv2);
+
+        assert!(tree.is_ancestor(0, id2));
+        assert!(tree.is_ancestor(id1, id2));
+        assert!(!tree.is_ancestor(id2, id1));
+        assert!(tree.is_ancestor(0, 0));
+    }
+
+    #[test]
+    fn test_descendants() {
+        let mut tree = HistoryTree::new();
+        let (op, inv) = make_filter_op();
+        let id1 = tree.add_child(0, op, inv);
+        let (op2, inv2) = make_filter_op();
+        let id2 = tree.add_child(id1, op2, inv2);
+
+        let desc = tree.descendants(0);
+        assert_eq!(desc.len(), 3);
+        assert!(desc.contains(&0));
+        assert!(desc.contains(&1));
+        assert!(desc.contains(&2));
+
+        let desc = tree.descendants(1);
+        assert_eq!(desc.len(), 2);
+        assert!(desc.contains(&1));
+        assert!(desc.contains(&2));
+    }
+
+    #[test]
+    fn test_add_child_with_scope() {
+        use crate::tag::TagScopeRef;
+        let mut tree = HistoryTree::new();
+        let (op, inv) = make_filter_op();
+        let scope = TagScopeRef {
+            tag_name: "errors".into(),
+            ranges: vec![(0, 50)],
+        };
+        let id = tree.add_child_with_scope(0, op, inv, Some(scope));
+        let node = tree.get_node(id).unwrap();
+        assert!(node.tag_scope.is_some());
+        assert_eq!(node.tag_scope.as_ref().unwrap().tag_name, "errors");
+    }
+
+    #[test]
+    fn test_topological_order_includes_deleted() {
+        let mut tree = HistoryTree::new();
+        let (op, inv) = make_filter_op();
+        let id1 = tree.add_child(0, op, inv);
+        tree.advance_branch("main", id1);
+
+        // Add a second child so node 1 still has a child in the tree
+        let (op2, inv2) = make_filter_op();
+        let id2 = tree.add_child(id1, op2, inv2);
+        tree.advance_branch("main", id2);
+
+        tree.soft_delete(id1).unwrap();
+
+        let order = tree.topological_order();
+        // Root, deleted node, and child should all appear
+        assert_eq!(order.len(), 3);
+        assert!(order[1].deleted);
+        assert_eq!(order[1].node_id, id1);
     }
 }

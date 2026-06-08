@@ -3,9 +3,14 @@ use lga_core::engine::Collector;
 use lga_core::operator::Operation;
 use std::path::Path;
 
-use super::app::{App, InputMode, ViewKind};
+use super::app::{App, InputMode, PendingOp, ViewKind};
 
 pub fn normal_mode(app: &mut App, key: KeyEvent) {
+    // Dispatch TagManager view keys
+    if app.active_view == ViewKind::TagManager {
+        handle_tag_manager(app, key);
+        return;
+    }
     match key.code {
         KeyCode::Char('q') => {
             app.should_quit = true;
@@ -233,6 +238,104 @@ pub fn normal_mode(app: &mut App, key: KeyEvent) {
                             app.open_repo(Some(&repos[idx]));
                         }
                     }
+                }
+            }
+        }
+        // ── Tag system ──
+        KeyCode::Char('t') => {
+            app.active_view = ViewKind::TagManager;
+            app.tag_cursor = 0;
+            app.status_message = String::from("Tag Manager — Enter:activate c:create r:rename d:delete q:back");
+        }
+        KeyCode::Char('v') => {
+            app.visual_select_start = Some(app.cursor_line);
+            app.visual_select_active = true;
+            app.input_mode = InputMode::VisualSelect;
+            app.status_message = String::from("Visual select — j/k extend, Enter confirm, Esc cancel");
+        }
+        KeyCode::Char('V') => {
+            app.visual_select_start = Some(app.cursor_line);
+            app.visual_select_active = true;
+            app.input_mode = InputMode::VisualSelect;
+            app.status_message = String::from("Visual select line — j/k extend, Enter confirm, Esc cancel");
+        }
+        KeyCode::Char('T') => {
+            app.active_tag_scope = None;
+            app.status_message = String::from("Tag scope cleared");
+        }
+
+        // ── History node operations (in History view) ──
+        KeyCode::Char(' ') => {
+            if app.active_view == ViewKind::History && app.history_cursor < app.history_nodes.len() {
+                let node_id = app.history_nodes[app.history_cursor].id;
+                if app.history_marks.contains(&node_id) {
+                    app.history_marks.remove(&node_id);
+                    app.status_message = format!("Unmarked node {}", node_id);
+                } else {
+                    app.history_marks.insert(node_id);
+                    app.status_message = format!("Marked node {} ({} total)", node_id, app.history_marks.len());
+                }
+            }
+        }
+        KeyCode::Char('m') => {
+            if app.active_view == ViewKind::History {
+                if app.history_marks.len() < 2 {
+                    app.error_message = Some("Need at least 2 marked nodes to merge. Use Space to mark.".into());
+                } else {
+                    let sources: Vec<usize> = app.history_marks.iter().copied().collect();
+                    let ids_str: Vec<String> = sources.iter().map(|i| i.to_string()).collect();
+                    let branch = format!("merge-{}", ids_str.join("-"));
+                    app.pending_op = PendingOp::MergeNodes { sources, branch };
+                    app.status_message = String::from("Merging marked nodes...");
+                }
+            }
+        }
+        KeyCode::Char('d') => {
+            if app.active_view == ViewKind::History && app.history_cursor < app.history_nodes.len() {
+                let node_id = app.history_nodes[app.history_cursor].id;
+                if let Some(base) = app.diff_base_node_id.take() {
+                    if base == node_id {
+                        app.error_message = Some("Cannot diff a node with itself".into());
+                    } else {
+                        let branch = format!("diff-{}-{}", base, node_id);
+                        app.pending_op = PendingOp::SubtractNodes { base, subtrahend: node_id, branch };
+                        app.status_message = format!("Subtracting node {} from node {}", node_id, base);
+                    }
+                } else {
+                    app.diff_base_node_id = Some(node_id);
+                    app.status_message = format!("Diff base set to node {}. Press d on another node to subtract.", node_id);
+                }
+            }
+        }
+        KeyCode::Char('y') => {
+            if app.active_view == ViewKind::History && app.history_cursor < app.history_nodes.len() {
+                let node_id = app.history_nodes[app.history_cursor].id;
+                app.yanked_node_id = Some(node_id);
+                app.status_message = format!("Yanked node {} — press p to paste", node_id);
+            }
+        }
+        KeyCode::Char('p') => {
+            if app.active_view == ViewKind::History {
+                if let Some(src_id) = app.yanked_node_id {
+                    if app.history_cursor < app.history_nodes.len() {
+                        let parent_id = app.history_nodes[app.history_cursor].id;
+                        let branch = format!("replay-{}", src_id);
+                        app.pending_op = PendingOp::ReplayNode { source: src_id, target_parent: parent_id, branch };
+                        app.status_message = format!("Replaying node {} at node {}", src_id, parent_id);
+                    }
+                } else {
+                    app.error_message = Some("Nothing yanked — press y on a node first".into());
+                }
+            }
+        }
+        KeyCode::Char('D') => {
+            if app.active_view == ViewKind::History && app.history_cursor < app.history_nodes.len() {
+                let node_id = app.history_nodes[app.history_cursor].id;
+                if node_id == 0 {
+                    app.error_message = Some("Cannot delete root node".into());
+                } else {
+                    app.pending_op = PendingOp::SoftDelete { node_id };
+                    app.status_message = format!("Soft-deleting node {}...", node_id);
                 }
             }
         }
@@ -893,6 +996,154 @@ fn handle_input(app: &mut App, prompt: &str, input: &str) {
         } else {
             app.error_message = Some("No repo open".to_string());
         }
+    }
+}
+
+// ── Tag handlers ──
+
+/// Handle visual line selection mode.
+pub fn visual_select_mode(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc => {
+            app.input_mode = InputMode::Normal;
+            app.visual_select_active = false;
+            app.visual_select_start = None;
+            app.status_message = String::from("Visual select cancelled");
+        }
+        KeyCode::Enter => {
+            // Confirm selection — prompt for tag name
+            let start = app.visual_select_start.unwrap_or(app.cursor_line);
+            let end = app.cursor_line;
+            let (s, e) = if start <= end { (start, end) } else { (end, start) };
+            let ranges = vec![(s, e)];
+            let default_name = app.tag_store.next_auto_name(&app.repo_name);
+            app.input_mode = InputMode::TagRename;
+            app.input_buffer = default_name;
+            app.input_prompt = format!("Tag name [{}-{}]: ", s + 1, e + 1);
+            // Store ranges temporarily in tag scope
+            app.visual_select_active = false;
+            app.visual_select_start = Some(s);
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            app.scroll_down(1);
+            app.cursor_line = (app.cursor_line + 1).min(app.total_lines.saturating_sub(1));
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            if app.cursor_line > 0 {
+                app.cursor_line -= 1;
+                app.scroll_up(1);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Handle tag rename/capture input after visual select.
+pub fn tag_rename_mode(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Enter => {
+            let name = app.input_buffer.clone();
+            let start = app.visual_select_start.take().unwrap_or(0);
+            let end = app.cursor_line;
+            let (s, e) = if start <= end { (start, end) } else { (end, start) };
+            app.input_buffer.clear();
+            app.input_mode = InputMode::Normal;
+            app.visual_select_active = false;
+
+            if !name.is_empty() {
+                let tag = lga_core::tag::Tag {
+                    name: name.clone(),
+                    ranges: vec![(s, e)],
+                    created_at: chrono::Utc::now(),
+                };
+                app.tag_store.add_tag(&app.repo_name, tag);
+                let _ = app.tag_store.save(&app.workspace.root());
+                app.status_message = format!(
+                    "Tag '{}' created for lines {}-{} ({} lines)",
+                    name,
+                    s + 1,
+                    e + 1,
+                    e - s + 1
+                );
+            }
+        }
+        KeyCode::Esc => {
+            app.input_buffer.clear();
+            app.input_mode = InputMode::Normal;
+            app.visual_select_active = false;
+            app.visual_select_start = None;
+            app.status_message = String::from("Tag creation cancelled");
+        }
+        KeyCode::Char(c) => app.input_buffer.push(c),
+        KeyCode::Backspace => { app.input_buffer.pop(); }
+        _ => {}
+    }
+}
+
+/// Handle tag management view key events. Called from normal_mode when
+/// active_view is TagManager, processed through the Esc/q/handler.
+/// This is processed inline in normal_mode with key check helpers.
+pub fn handle_tag_manager(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Char('q') | KeyCode::Esc => {
+            app.active_view = ViewKind::LogView;
+            app.status_message = String::from("Tag manager closed");
+        }
+        KeyCode::Char('c') => {
+            // Create new tag via visual select
+            app.active_view = ViewKind::LogView;
+            app.visual_select_start = Some(app.cursor_line);
+            app.visual_select_active = true;
+            app.input_mode = InputMode::VisualSelect;
+            app.status_message = String::from("Visual select — j/k extend, Enter confirm, Esc cancel");
+        }
+        KeyCode::Enter => {
+            // Activate selected tag as scope
+            let tags = app.tag_store.get_tags(&app.repo_name).to_vec();
+            if app.tag_cursor < tags.len() {
+                let tag = &tags[app.tag_cursor];
+                let scope = app.tag_store.make_scope(&app.repo_name, &tag.name);
+                app.active_tag_scope = scope;
+                app.active_view = ViewKind::LogView;
+                app.status_message = format!("Tag scope set to '{}' — operations now scoped", tag.name);
+            }
+        }
+        KeyCode::Char('r') => {
+            // Rename selected tag
+            let tags = app.tag_store.get_tags(&app.repo_name).to_vec();
+            if app.tag_cursor < tags.len() {
+                let old_name = tags[app.tag_cursor].name.clone();
+                app.input_mode = InputMode::Input;
+                app.input_buffer = old_name.clone();
+                app.input_prompt = format!("Rename tag '{}' to: ", old_name);
+                // Store old name for rename on Enter
+                app.pending_history_export = Some(app.tag_cursor);
+            }
+        }
+        KeyCode::Char('d') => {
+            // Delete selected tag
+            let tags = app.tag_store.get_tags(&app.repo_name).to_vec();
+            if app.tag_cursor < tags.len() {
+                let name = &tags[app.tag_cursor].name;
+                app.tag_store.remove_tag(&app.repo_name, name);
+                if app.tag_cursor >= tags.len().saturating_sub(1) {
+                    app.tag_cursor = app.tag_cursor.saturating_sub(1);
+                }
+                app.status_message = format!("Tag '{}' deleted", name);
+            }
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            let tags = app.tag_store.get_tags(&app.repo_name);
+            if app.tag_cursor + 1 < tags.len() {
+                app.tag_cursor += 1;
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            if app.tag_cursor > 0 {
+                app.tag_cursor -= 1;
+            }
+        }
+        _ => {}
     }
 }
 

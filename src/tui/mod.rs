@@ -158,6 +158,8 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         InputMode::Search => handlers::search_mode(app, key),
         InputMode::Input => handlers::input_mode(app, key),
         InputMode::FileBrowser => handlers::file_browser_mode(app, key),
+        InputMode::VisualSelect => handlers::visual_select_mode(app, key),
+        InputMode::TagRename => handlers::tag_rename_mode(app, key),
     }
 }
 

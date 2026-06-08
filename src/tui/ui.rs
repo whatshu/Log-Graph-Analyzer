@@ -97,11 +97,13 @@ fn render_action_bar(f: &mut Frame, area: Rect, app: &App) {
         ],
         ViewKind::History => vec![
             ("↑↓:Select", COLOR_ACCENT),
-            ("Enter:Checkout", COLOR_HIGHLIGHT),
-            ("e:Export", COLOR_HIGHLIGHT),
-            ("c:Collect", COLOR_ACCENT),
-            ("u:Undo", COLOR_ACCENT),
-            ("l:Log", COLOR_DIM),
+            ("Spc:Mark", COLOR_ACCENT),
+            ("m:Merge", COLOR_HIGHLIGHT),
+            ("d:Diff", COLOR_HIGHLIGHT),
+            ("y:Yank", COLOR_ACCENT),
+            ("p:Paste", COLOR_ACCENT),
+            ("D:Del", COLOR_ERROR),
+            ("Enter:View", COLOR_HIGHLIGHT),
             ("?:Help", COLOR_DIM),
         ],
         ViewKind::Analytics => vec![
@@ -161,7 +163,7 @@ fn render_tabs(f: &mut Frame, area: Rect, app: &App) {
         ViewKind::History => 1,
         ViewKind::RepoList => 2,
         ViewKind::Analytics => 3,
-        ViewKind::Help => 0,
+        ViewKind::Help | ViewKind::TagManager => 0,
     };
 
     let tabs = Tabs::new(titles)
@@ -183,7 +185,7 @@ fn render_content(f: &mut Frame, area: Rect, app: &App) {
         ViewKind::RepoList => render_repo_list(f, area, app),
         ViewKind::Analytics => render_analytics(f, area, app),
         ViewKind::History => render_history(f, area, app),
-        ViewKind::Help => render_log_view(f, area, app),
+        ViewKind::Help | ViewKind::TagManager => render_log_view(f, area, app),
     }
 }
 
@@ -342,8 +344,27 @@ fn render_history(f: &mut Frame, area: Rect, app: &App) {
                 ));
             }
 
-            // Cursor marker
-            let marker = if is_cursor {
+            // Cursor / mark / deleted marker
+            let is_marked = app.history_marks.contains(&node.id);
+            let marker = if node.deleted {
+                if app.ascii_only {
+                    Span::styled("x ", Style::default().fg(COLOR_ERROR))
+                } else {
+                    Span::styled("✗ ", Style::default().fg(COLOR_ERROR))
+                }
+            } else if is_cursor && is_marked {
+                if app.ascii_only {
+                    Span::styled("* ", Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD))
+                } else {
+                    Span::styled("◉ ", Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD))
+                }
+            } else if is_marked {
+                if app.ascii_only {
+                    Span::styled("+ ", Style::default().fg(COLOR_HIGHLIGHT).add_modifier(Modifier::BOLD))
+                } else {
+                    Span::styled("✓ ", Style::default().fg(COLOR_HIGHLIGHT).add_modifier(Modifier::BOLD))
+                }
+            } else if is_cursor {
                 if app.ascii_only {
                     Span::styled("* ", Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD))
                 } else {
@@ -582,6 +603,19 @@ fn render_help_overlay(f: &mut Frame, area: Rect, _app: &App) {
         Line::from(vec![Span::styled("  a            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Append file to repo")]),
         Line::from(vec![Span::styled("  I            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Insert line after cursor")]),
         Line::from(vec![Span::styled("  M            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Modify current line")]),
+        Line::from(""),
+        Line::from(vec![Span::styled("  Tags        ", Style::default().fg(COLOR_ACCENT))]),
+        Line::from(vec![Span::styled("  v / V        ", Style::default().fg(COLOR_ACCENT)), Span::raw("Visual select lines for tag")]),
+        Line::from(vec![Span::styled("  t            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Tag manager (list/create/activate)")]),
+        Line::from(vec![Span::styled("  T            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Clear active tag scope")]),
+        Line::from(""),
+        Line::from(vec![Span::styled("  History Ops (h view)", Style::default().fg(COLOR_ACCENT))]),
+        Line::from(vec![Span::styled("  Space        ", Style::default().fg(COLOR_ACCENT)), Span::raw("Mark node for multi-select merge")]),
+        Line::from(vec![Span::styled("  m            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Merge marked nodes (OR union)")]),
+        Line::from(vec![Span::styled("  d            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Diff: select base, press again to subtract")]),
+        Line::from(vec![Span::styled("  y            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Yank (copy) node operation")]),
+        Line::from(vec![Span::styled("  p            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Paste yanked operation at cursor")]),
+        Line::from(vec![Span::styled("  D            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Soft-delete node (keeps pattern in history)")]),
         Line::from(""),
         Line::from(vec![Span::styled("  Other       ", Style::default().fg(COLOR_ACCENT))]),
         Line::from(vec![Span::styled("  ?            ", Style::default().fg(COLOR_ACCENT)), Span::raw("This help")]),

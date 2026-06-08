@@ -304,6 +304,57 @@ lga-cli replace 'user=\w+' 'user=REDACTED'
 lga-cli export anonymized.log
 ```
 
+## Tag System
+
+Tags mark specific line ranges for scoped operations. Once a tag scope is active, all subsequent operations (filter, search, replace, etc.) only apply to lines within that range. History nodes created under a tag scope record the scope context.
+
+### TUI
+
+| Key | Action |
+|-----|--------|
+| `v` | Start visual line selection |
+| `V` | Start visual selection from cursor |
+| `j/k` or `↑/↓` | Extend selection up/down |
+| `Enter` | Confirm selection → prompt for tag name |
+| `Esc` | Cancel selection |
+| `t` | Open tag manager (list/create/delete/rename/activate) |
+| `T` | Clear active tag scope |
+
+The active tag scope is shown in the status bar. When a scope is active (`t` → select tag → `Enter`), all operations are restricted to the tagged lines. Use `T` to clear the scope.
+
+### CLI
+
+```bash
+lga-cli tag list                          # List all tags
+lga-cli tag create errors --ranges "10-50,100-200"  # Create tag (1-based)
+lga-cli tag delete errors                 # Delete tag
+lga-cli tag rename errors all_errors      # Rename tag
+```
+
+### History Node Operations (TUI only)
+
+In the History view (`h` key), you can manipulate nodes:
+
+| Key | Action |
+|-----|--------|
+| `Space` | Toggle mark on current node (multi-select for merge) |
+| `m` | Merge all marked nodes (OR union of line sets) |
+| `d` | Diff mode: first press selects base node, second press selects subtrahend |
+| `y` | Yank (copy) current node's operation |
+| `p` | Paste yanked operation at cursor position |
+| `D` | Soft-delete current node (pattern preserved in history) |
+
+Node operations are also available via CLI:
+```bash
+lga-cli node merge 1 2 3 --branch combined   # Merge nodes 1,2,3 (OR union)
+lga-cli node subtract 5 3 --branch filtered   # Node 5 minus node 3
+lga-cli node delete 4                         # Soft-delete node 4
+```
+
+### Persistence
+
+Tags are stored in `.log_analyzer/tags.json` in the workspace directory and persist across sessions. The tag store is automatically loaded when entering tag mode.
+
 ## Benchmarks
 
 Tested on a 897 MB log file (2.15 million lines). One-time import: **~630 ms**.
