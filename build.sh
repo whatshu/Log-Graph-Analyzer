@@ -264,6 +264,30 @@ do_ci() {
 
     info "CI build: all platform wheels + packages -> dist/"
 
+    # Collect proxy env vars for Docker containers.
+    # `docker run` does NOT inherit host env vars automatically.
+    # We pass through whichever proxy variables are set in the host environment.
+    local -a docker_proxy_opts=()
+    if [[ -n "${http_proxy:-}" ]]; then
+        docker_proxy_opts+=(-e "http_proxy=${http_proxy}")
+        info "Docker proxy: http_proxy=${http_proxy}"
+    fi
+    if [[ -n "${https_proxy:-}" ]]; then
+        docker_proxy_opts+=(-e "https_proxy=${https_proxy}")
+    fi
+    if [[ -n "${HTTP_PROXY:-}" ]]; then
+        docker_proxy_opts+=(-e "HTTP_PROXY=${HTTP_PROXY}")
+    fi
+    if [[ -n "${HTTPS_PROXY:-}" ]]; then
+        docker_proxy_opts+=(-e "HTTPS_PROXY=${HTTPS_PROXY}")
+    fi
+    if [[ -n "${no_proxy:-}" ]]; then
+        docker_proxy_opts+=(-e "no_proxy=${no_proxy}")
+    fi
+    if [[ -n "${NO_PROXY:-}" ]]; then
+        docker_proxy_opts+=(-e "NO_PROXY=${NO_PROXY}")
+    fi
+
     # ---- Linux targets via manylinux / cross-compilation Docker ----
     if command -v docker >/dev/null 2>&1; then
         for entry in "${CI_TARGETS[@]}"; do
@@ -284,6 +308,7 @@ do_ci() {
                     docker run --rm \
                         -v "$ROOT_DIR":/io \
                         -w /io \
+                        "${docker_proxy_opts[@]}" \
                         "$image" \
                         build --release --find-interpreter --target "$target" -o /io/dist \
                         && ok "$target done" \

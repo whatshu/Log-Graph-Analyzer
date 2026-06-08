@@ -29,6 +29,25 @@ jobs:
       - name: Build TUI binary
         run: cargo build --bin la --no-default-features --release
 
+      - name: Set OS short name
+        id: os_name
+        shell: bash
+        run: |
+          case "${{ matrix.os }}" in
+            ubuntu-latest)   echo "short=linux"   >> $GITHUB_OUTPUT ;;
+            macos-latest)    echo "short=macos"   >> $GITHUB_OUTPUT ;;
+            windows-latest)  echo "short=windows" >> $GITHUB_OUTPUT ;;
+          esac
+
+      - name: Upload TUI binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: tui-${{ steps.os_name.outputs.short }}
+          path: |
+            target/release/la
+            target/release/la.exe
+          if-no-files-found: ignore
+
   # Python integration tests (ubuntu only — requires maturin + pytest)
   python-test:
     name: Python tests
@@ -71,4 +90,88 @@ jobs:
       - name: Build wheel
         uses: PyO3/maturin-action@v1
         with:
-          args: --release --features python-bindings
+          args: --release --features python-bindings --out dist
+
+      - name: Set OS short name
+        id: os_name
+        shell: bash
+        run: |
+          case "${{ matrix.os }}" in
+            ubuntu-latest)   echo "short=linux"   >> $GITHUB_OUTPUT ;;
+            macos-latest)    echo "short=macos"   >> $GITHUB_OUTPUT ;;
+            windows-latest)  echo "short=windows" >> $GITHUB_OUTPUT ;;
+          esac
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: lib-${{ steps.os_name.outputs.short }}
+          path: dist/*.whl
+
+  # ── Collect all artifacts into BUILD/{YYYYMMDD}_{VERSION}_{ID}/ ──
+  # Only runs on push to main when all jobs succeed.
+  # CI failure does NOT record — the publish step is skipped entirely.
+  publish:
+    name: Publish
+    needs: [rust-test, python-test, wheel-check]
+    if: |
+      always() &&
+      needs.rust-test.result == 'success' &&
+      needs.python-test.result == 'success' &&
+      needs.wheel-check.result == 'success' &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read VERSION and BUILD_ID
+        id: meta
+        run: |
+          VERSION=$(cat VERSION)
+          BUILD_ID=$(cat BUILD_ID)
+          BUILD_DATE=$(date +%Y%m%d)
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "build_id=${BUILD_ID}" >> $GITHUB_OUTPUT
+          echo "build_date=${BUILD_DATE}" >> $GITHUB_OUTPUT
+          echo "Publishing BUILD/${BUILD_DATE}_${VERSION}_$(printf '%04d' ${BUILD_ID})"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: _artifacts
+
+      - name: Organize into BUILD directory
+        run: |
+          BUILD_DIR="BUILD/${{ steps.meta.outputs.build_date }}_${{ steps.meta.outputs.version }}_$(printf '%04d' ${{ steps.meta.outputs.build_id }})"
+          mkdir -p "${BUILD_DIR}"
+
+          shopt -s nullglob
+          for dir in _artifacts/*/; do
+            name=$(basename "$dir")
+            mkdir -p "${BUILD_DIR}/${name}"
+            cp -r "$dir"* "${BUILD_DIR}/${name}/"
+          done
+
+          echo "=== Build directory: ${BUILD_DIR} ==="
+          find "${BUILD_DIR}" -type f | sort
+
+      - name: Upload BUILD as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ steps.meta.outputs.build_date }}-${{ steps.meta.outputs.version }}-$(printf '%04d' ${{ steps.meta.outputs.build_id }})
+          path: BUILD/
+
+      - name: Increment BUILD_ID and push
+        run: |
+          NEW_ID=$((${{ steps.meta.outputs.build_id }} + 1))
+          echo "${NEW_ID}" > BUILD_ID
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add BUILD_ID
+          git commit -m "ci: bump BUILD_ID to ${NEW_ID} [skip ci]" || echo "No changes to commit"
+          git pull --rebase origin main
+          git push origin main
