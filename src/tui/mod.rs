@@ -16,7 +16,7 @@ use app::{App, InputMode};
 use event::{install_panic_hook, restore_terminal, setup_terminal};
 use ui::render;
 
-use lga_core::error::Result;
+use lograph::error::Result;
 
 pub fn run(workspace_root: &Path, initial_repo: Option<&str>) -> Result<()> {
     // Validate terminal capabilities before entering TUI mode.
@@ -56,7 +56,7 @@ pub fn run(workspace_root: &Path, initial_repo: Option<&str>) -> Result<()> {
 
     // Tmux: set window title if in tmux
     if app.in_tmux {
-        tmux_set_title("lga");
+        tmux_set_title("lograph");
     }
 
     setup_terminal()?;
@@ -70,10 +70,10 @@ pub fn run(workspace_root: &Path, initial_repo: Option<&str>) -> Result<()> {
 
     // Tmux: reset title
     if app.in_tmux {
-        tmux_set_title("lga (exited)");
+        tmux_set_title("lograph (exited)");
     }
 
-    result.map_err(|e| lga_core::error::LogAnalyzerError::Io(e))?;
+    result.map_err(|e| lograph::error::LogAnalyzerError::Io(e))?;
     Ok(())
 }
 

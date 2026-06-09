@@ -2,13 +2,13 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use lga_core::cache::CacheManager;
-use lga_core::config::Config;
-use lga_core::engine::{CollectResult, Collector};
-use lga_core::error::Result;
-use lga_core::operator::Operation;
-use lga_core::repo::{LogRepo, Workspace};
-use lga_core::tag::{TagScopeRef, TagStore};
+use lograph::cache::CacheManager;
+use lograph::config::Config;
+use lograph::engine::{CollectResult, Collector};
+use lograph::error::Result;
+use lograph::operator::Operation;
+use lograph::repo::{LogRepo, Workspace};
+use lograph::tag::{TagScopeRef, TagStore};
 
 use std::path::PathBuf;
 
@@ -194,7 +194,7 @@ impl App {
                 // Fallback: in-memory only (directory inaccessible)
                 CacheManager::new(
                     PathBuf::from(".log_analyzer").join("cache"),
-                    lga_core::cache::CacheConfig::default(),
+                    lograph::cache::CacheConfig::default(),
                 )
                 .unwrap_or_else(|_| {
                     // This shouldn't fail with default config since we create dirs
@@ -287,7 +287,7 @@ impl App {
                 self.status_message = format!("Opened repo '{}'", name);
                 let _ = self.workspace.set_active(name);
                 if self.in_tmux {
-                    set_tmux_title(&format!("lga: {}", name));
+                    set_tmux_title(&format!("lograph: {}", name));
                 }
             }
             Err(e) => {
@@ -533,7 +533,7 @@ impl App {
             let repo_ref = self.repo.borrow();
             repo_ref
                 .as_ref()
-                .map(|r| lga_core::cache::hash_repo_path(r.path()))
+                .map(|r| lograph::cache::hash_repo_path(r.path()))
                 .unwrap_or_default()
         };
 
@@ -548,7 +548,7 @@ impl App {
             if let Some(ref r) = *repo_ref {
                 r.view_node(node_id)?
             } else {
-                return Err(lga_core::error::LogAnalyzerError::Repo(
+                return Err(lograph::error::LogAnalyzerError::Repo(
                     "No repo open".to_string(),
                 ));
             }

@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use lga_core::engine::Collector;
-use lga_core::operator::Operation;
+use lograph::engine::Collector;
+use lograph::operator::Operation;
 use std::path::Path;
 
 use super::app::{App, InputMode, PendingOp, ViewKind};
@@ -552,7 +552,7 @@ fn execute_command(app: &mut App, cmd: &str) {
             if let Some(ref mut r) = *repo_mut {
                 r.append_file(Path::new(path)).map(|n| n)
             } else {
-                Err(lga_core::error::LogAnalyzerError::Repo(
+                Err(lograph::error::LogAnalyzerError::Repo(
                     "No repo open".to_string(),
                 ))
             }
@@ -866,7 +866,7 @@ fn execute_collect(app: &mut App, sub: &str) {
 }
 
 /// Resolve a pattern that may be a @name reference to a saved filter.
-fn resolve_pattern(config: &lga_core::config::Config, pattern: &str) -> String {
+fn resolve_pattern(config: &lograph::config::Config, pattern: &str) -> String {
     let trimmed = pattern.trim();
     if let Some(name) = trimmed.strip_prefix('@') {
         config.get_filter(name).map(|s| s.to_string()).unwrap_or_else(|| {
@@ -942,7 +942,7 @@ fn handle_input(app: &mut App, prompt: &str, input: &str) {
             if let Some(ref mut r) = *repo_mut {
                 r.append_file(path).map(|n| n)
             } else {
-                Err(lga_core::error::LogAnalyzerError::Repo(
+                Err(lograph::error::LogAnalyzerError::Repo(
                     "No repo open".to_string(),
                 ))
             }
@@ -1051,7 +1051,7 @@ pub fn tag_rename_mode(app: &mut App, key: KeyEvent) {
             app.visual_select_active = false;
 
             if !name.is_empty() {
-                let tag = lga_core::tag::Tag {
+                let tag = lograph::tag::Tag {
                     name: name.clone(),
                     ranges: vec![(s, e)],
                     created_at: chrono::Utc::now(),
@@ -1151,8 +1151,8 @@ pub fn handle_tag_manager(app: &mut App, key: KeyEvent) {
 mod tests {
     use super::*;
     use crate::tui::app::{App, ViewKind};
-    use lga_core::engine::Collector;
-    use lga_core::operator::Operation;
+    use lograph::engine::Collector;
+    use lograph::operator::Operation;
     use std::fs;
     use tempfile::TempDir;
 
@@ -1181,7 +1181,7 @@ mod tests {
         let content = make_test_log(200);
         fs::write(&log_file, &content).unwrap();
         let ws_root = tmp.path().join("workspace");
-        let ws = lga_core::repo::Workspace::open(&ws_root).unwrap();
+        let ws = lograph::repo::Workspace::open(&ws_root).unwrap();
         let _ = ws.migrate_if_needed();
         ws.import_file("test", &log_file).unwrap();
         App::new(&ws_root, Some("test")).unwrap()

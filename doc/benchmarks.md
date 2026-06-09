@@ -33,7 +33,6 @@ Throughput is calculated relative to the 10 GiB raw file.
 | `rg -c '.'` | 5.25 s | 1.9 GiB/s |
 
 `wc -l` wins by scanning only for `\n` bytes without invoking a regex engine.
-`rg -c '.'` applies its regex engine per line, slower for this specific task.
 
 ---
 
@@ -43,9 +42,9 @@ Throughput is calculated relative to the 10 GiB raw file.
 |------|------|------------|-------|
 | `awk '/ERROR/{c++}END{print c}'` | 36.23 s | 0.28 GiB/s | pure interpreter, no SIMD |
 | `grep -c ERROR` | 1.95 s | 5.1 GiB/s | single-threaded, SIMD |
-| `log-analyzer count_file_matches()` | 1.53 s | 6.5 GiB/s | ripgrep SIMD on raw file, no import |
+| `lograph count_file_matches()` | 1.53 s | 6.5 GiB/s | ripgrep SIMD on raw file, no import |
 | `rg -c ERROR` | 1.18 s | 8.5 GiB/s | multi-threaded, SIMD |
-| **`log-analyzer count_matches()` (compressed)** | **0.51 s** | **19.6 GiB/s*** | reads only 4.26 GiB compressed |
+| **`lograph count_matches()` (compressed)** | **0.51 s** | **19.6 GiB/s*** | reads only 4.26 GiB compressed |
 
 \* Throughput marked `*` is normalized to raw-equivalent bytes.
   Actual compressed I/O is 4.26 GiB.
@@ -76,11 +75,10 @@ zstd-compressed chunks. All subsequent operations work on the smaller repo.
 |------|------|------------|-------|
 | `grep ERROR file > out` | 2.23 s | 4.5 GiB/s | single-threaded |
 | `rg ERROR file > out` | **1.42 s** | **7.1 GiB/s** | multi-threaded |
-| `log-analyzer stream_filter_to_file()` | 9.21 s | 1.1 GiB/s | decompress + scan + write |
+| `lograph stream_filter_to_file()` | 9.21 s | 1.1 GiB/s | decompress + scan + write |
 
-For write-heavy filter operations, `grep`/`rg` are faster. `log-analyzer`'s
+For write-heavy filter operations, `grep`/`rg` are faster. lograph's
 streaming filter pays both a decompression cost and a per-line write overhead.
-This is the primary area for future native optimization.
 
 ---
 
@@ -89,12 +87,12 @@ This is the primary area for future native optimization.
 | Scenario | Best tool | Relative speed |
 |----------|-----------|----------------|
 | One-time line count | `wc -l` | — |
-| **Repeated pattern counting** | log-analyzer (compressed) | **2.3× faster than `rg`** |
+| **Repeated pattern counting** | lograph (compressed) | **2.3× faster than `rg`** |
 | Filter to file | `rg` | — |
-| Reversible ops (filter/replace/undo) | log-analyzer | unique feature |
-| Disk footprint | log-analyzer repo | **2.4× smaller** |
+| Reversible ops (filter/replace/undo) | lograph | unique feature |
+| Disk footprint | lograph repo | **2.4× smaller** |
 
-### When log-analyzer pays off
+### When lograph pays off
 
 - **Repeated search / count queries** on the same dataset: the 2.4× smaller
   compressed repo means each query reads proportionally less I/O.
@@ -105,8 +103,7 @@ This is the primary area for future native optimization.
 ### When raw tools win
 
 - **Single-pass filter to file**: `grep` / `rg` have optimized pipelines for this.
-- **One-off queries**: if you query only once, the 11.7 s import overhead
-  is not amortized.
+- **One-off queries**: if you query only once, the import overhead is not amortized.
 - **Simple line counting**: `wc -l` is always fastest for line counts.
 
 ---

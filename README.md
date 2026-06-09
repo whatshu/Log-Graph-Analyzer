@@ -1,151 +1,109 @@
-# lga
+# Log Graph Analyzer
 
 [中文文档](README_zh.md)
 
-A high-performance log analysis tool built with a **Rust** backend and **Python** CLI frontend. Designed for text log files exceeding **10 GB**, it stores logs in compressed repositories with a full operation history and undo support. Uses [ripgrep](https://github.com/BurntSushi/ripgrep)'s SIMD-accelerated search engine internally.
+**lograph is the command-line interface of Log Graph Analyzer.** —
+A high-performance log analysis tool that treats your log data as a graph of operations, enabling reversible filtering, branching analysis, and undo support. Designed for text log files exceeding **10 GB**.
 
-## Features
+## What is Log Graph Analyzer?
 
-- **Compressed storage** — Logs are split into chunks and compressed with zstd. A 900 MB file typically compresses to ~100 MB on disk.
-- **Reversible operations** — Every operation (filter, replace, delete, insert, modify) records inverse data, enabling unlimited undo.
-- **Git-like repositories** — Each repository maintains an operation journal. Repositories can be cloned for parallel analysis branches.
-- **Streaming engine** — Filter, replace, search, and collect statistics chunk-by-chunk without loading the entire file into memory.
-- **Collectors** — Read-only terminal operations (inspired by Java Stream Collectors) for aggregation: count, group-by, top-N, unique values, numeric statistics.
-- **ripgrep-powered search** — Pattern matching uses [grep-searcher](https://crates.io/crates/grep-searcher) with SIMD literal optimizations from the ripgrep ecosystem.
-- **Multi-threaded** — Parallel chunk processing via [rayon](https://github.com/rayon-rs/rayon) for indexing, filtering, searching, and collecting.
-- **Append** — Incrementally add new log data to an existing repository without re-importing.
-- **Python API** — Full Rust functionality exposed to Python via [PyO3](https://pyo3.rs), usable both as a library and through the CLI.
+Log Graph Analyzer helps you explore and analyze large log files interactively. Instead of running throwaway `grep` commands, you **import** a log file once, then **filter**, **search**, **replace**, and **collect statistics** — with full **undo** and **branching** support. Think of it as "Git for logs."
 
-## Building
-
-Requires **Python >= 3.10** and **Rust toolchain** (rustc + cargo).
-
-A `build.sh` script is provided for all build tasks:
-
-```bash
-./build.sh                    # Build release wheel only (no install)
-./build.sh --dev              # Build debug wheel only
-./build.sh install            # Build release wheel and install
-./build.sh install --dev      # Editable development install (rebuilds on Rust changes)
-./build.sh uninstall          # Remove installed package
-./build.sh test               # Install and run full test suite
-```
-
-Or manually:
-
-```bash
-pip install -e ".[dev]"       # Editable install (uses maturin)
-maturin build --release       # Build .whl to target/wheels/
-```
-
-## Invocation Methods
-
-lga-cli can be used in four different ways:
-
-### 1. Python CLI (`lga-cli`)
-
-The primary interface. Installed as a console script via pip:
-
-```bash
-pip install -e ".[dev]"
-lga-cli --help
-```
-
-All log operations (import, filter, replace, search, undo, export, etc.) and repository management commands (`repo list`, `clone`, `remove`, etc.) are available through the CLI. See [Quick Start](#quick-start) and [CLI Reference](#cli-reference) below.
-
-### 2. Rust Native TUI (`lga`)
-
-An interactive terminal UI built with ratatui + crossterm. Launched via the `lga` binary:
-
-```bash
-cargo run --                                          # Development
-cargo build --release && ./target/release/la           # Release build
-
-# Options
-la -w .logrepo -r myrepo    # Specify workspace and repo
-```
-
-Provides a visual interface with operation history tree, file browser, action bar, and tmux support.
-
-#### Terminal Compatibility
-
-The TUI works in most modern terminals. Known-compatible terminals:
-
-- **Linux**: xterm, gnome-terminal, konsole, alacritty, kitty, st, tmux, screen
-- **macOS**: Terminal.app, iTerm2, alacritty, kitty
-- **Windows**: Windows Terminal, alacritty, wezterm
-
-**Requirements**: The terminal must support ANSI escape sequences (alternate screen, raw mode). Most terminal emulators do. Environments where it will NOT work: `TERM=dumb`, CI runners, bare `sh` without a pty.
-
-**ASCII fallback**: If your locale does not report UTF-8 (e.g., `LANG=C`), the TUI automatically switches to ASCII-safe characters: `|`/`` ` ``/`-` for tree connectors, `*`/`o` for bullets, `[D]`/`[F]` for file icons.
-
-**Crash safety**: A panic hook ensures the terminal is always restored (exit alternate screen, re-enable cursor) even if the app crashes.
-
-### 3. Python Library
-
-Import and use log-analyzer programmatically in scripts or notebooks:
-
-```python
-from lga import Workspace, LogRepo
-
-ws = Workspace(".logrepo")
-repo = ws.import_file("server.log", "my_repo")
-repo.filter("ERROR", keep=True)
-repo.export("output.log")
-```
-
-See [Python API](#python-api) for the full API reference.
-
-### 4. Rust Library
-
-Use the core engine as a Rust library in other projects:
-
-```toml
-[dependencies]
-lga_core = { path = "/path/to/log-analyzer", default-features = false }
-```
-
-```rust
-use lga_core::repo;
-use lga_core::engine;
-```
-
-Disabling default features skips Python bindings, giving you a pure Rust library.
+- 🗜️ **Compressed storage** — logs compress to 40% of original size with zstd
+- 🌳 **History graph** — every operation is a node in a DAG; branch, merge, and diff
+- ↩️ **Unlimited undo** — all operations are reversible
+- 📊 **Built-in analytics** — count, group, top-N, unique values, numeric stats
+- ⚡ **Fast search** — powered by ripgrep's SIMD-accelerated search engine
+- 🖥️ **TUI + CLI** — interactive terminal interface or scriptable command line
+- 🐍 **Python API** — use as a library in your own scripts and notebooks
 
 ## Quick Start
 
+### Install
+
 ```bash
-# Import a log file (creates "default" repo)
-lga-cli import server.log
+# Via pip (includes both lograph-cli and Python library)
+pip install lograph
+
+# Or use cargo for the TUI binary only
+cargo install lograph --no-default-features
+```
+
+### First Analysis
+
+```bash
+# Import a log file
+lograph-cli import server.log
 
 # View the first 20 lines
-lga-cli view
+lograph-cli view
+
+# Count all ERROR lines
+lograph-cli stats count ERROR
 
 # Filter to keep only ERROR lines
-lga-cli filter "ERROR" --keep
+lograph-cli filter ERROR --keep
 
-# Undo the filter
-lga-cli undo
+# Undo that filter
+lograph-cli undo
 
-# Clone for a separate analysis branch
-lga-cli repo clone default errors
-lga-cli repo use errors
-lga-cli filter "ERROR" --keep
-
-# Switch back — original is untouched
-lga-cli repo use default
-lga-cli view
-
-# List all repos
-lga-cli repo list
-
-# Export
-lga-cli export filtered.log
+# Export the current state
+lograph-cli export filtered.log
 ```
+
+### Using the TUI
+
+```bash
+# Launch the interactive terminal UI
+lograph
+
+# Or specify workspace and repo
+lograph -w .logrepo -r myrepo
+```
+
+In the TUI, press `?` to see all keybindings.
+
+## Features
+
+### Git-like History Graph
+
+Every operation you apply becomes a node in a history graph. You can:
+
+- **Branch** from any node to explore different analysis paths
+- **Merge** nodes to combine filtered results
+- **Diff** nodes to see what one filter removed that another kept
+- **Undo** any operation by moving back in the graph
+
+### Collectors (Built-in Analytics)
+
+Read-only aggregations inspired by Java Stream Collectors:
+
+| Collector | Description | Example |
+|-----------|-------------|---------|
+| `count` | Count matching lines | `stats count ERROR` |
+| `group-count` | Group by capture group | `stats group-count '\[(\w+)\]'` |
+| `top` | Top-N most frequent values | `stats top 'clientId=(\d+)' -n 10` |
+| `distinct` | Unique values of a group | `stats distinct 'src=(\S+)'` |
+| `numbers` | Numeric stats (min/max/avg/sum) | `stats numbers 'latency=(\d+)ms'` |
+
+### Tag System
+
+Mark line ranges with named tags for scoped operations. Filter, search, and collect only within tagged regions.
+
+### Streaming Engine
+
+Process files >10 GB chunk-by-chunk without loading everything into memory. Filter to file, search, or collect statistics in a single streaming pass.
+
+### Four Ways to Use
+
+1. **`lograph`** — Interactive terminal UI (ratatui + crossterm)
+2. **`lograph-cli`** — Command-line interface for scripting
+3. **Python library** — `from lograph import Workspace, LogRepo`
+4. **Rust library** — `lograph = "0.0.1"` in Cargo.toml (disable default features)
 
 ## CLI Reference
 
-### Log operations
+### Log Operations
 
 | Command | Description |
 |---------|-------------|
@@ -155,383 +113,89 @@ lga-cli export filtered.log
 | `view` | View lines from the current state |
 | `search <pattern>` | Search for regex matches (read-only) |
 | `filter <pattern>` | Keep (`--keep`) or remove (`--remove`) matching lines |
-| `replace <pattern> <replacement>` | Regex replace (supports `$1`, `$2` capture groups) |
-| `delete <indices...>` | Delete lines by 0-based index |
+| `replace <pattern> <replacement>` | Regex replace with capture groups |
+| `delete <indices...>` | Delete lines by index |
 | `insert <after> <content...>` | Insert lines after a position |
 | `modify <index> <content>` | Replace a single line |
 | `undo` | Undo the last operation |
 | `history` | Show the operation journal |
 | `export <file>` | Write the current state to a file |
 
-### Repository management
+### Repository Management
 
 | Command | Description |
 |---------|-------------|
-| `repo list` | List all repos in the workspace (`*` marks active) |
+| `repo list` | List all repos (`*` marks active) |
 | `repo use <name>` | Switch the active repository |
 | `repo clone <src> <dst>` | Clone a repo under a new name |
 | `repo remove <name>` | Delete a repository |
 
-All log commands accept `--repo <name>` to target a specific repo (default: active repo).
-The workspace directory defaults to `.logrepo/` and can be changed with `--workspace <path>`.
+### Analytics (stats)
+
+| Command | Description |
+|---------|-------------|
+| `stats overview` | Overview statistics |
+| `stats count [pattern]` | Count lines (optionally filtered) |
+| `stats group-count <p>` | Group by capture group |
+| `stats top <p>` | Top-N frequent values |
+| `stats distinct <p>` | Distinct values |
+| `stats numbers <p>` | Numeric statistics |
+
+### Other
+
+| Command | Description |
+|---------|-------------|
+| `branch list/create/checkout/delete` | Manage analysis branches |
+| `node merge/subtract/delete` | History node operations |
+| `tag list/create/delete/rename` | Tag management |
+| `merge <srcs> --into <tgt>` | Merge multiple repos |
+| `search-file <file> <p>` | Search a file directly (no import) |
 
 ## Python API
 
 ```python
-from lga import Workspace
+from lograph import Workspace
 
-# Open workspace (auto-creates on first import)
+# Open workspace
 ws = Workspace(".logrepo")
 
-# Import into a named repo
-ws.import_file("server.log", "default")
+# Import a log file
+ws.import_file("server.log", "my_repo")
 
-# Manage repos
-ws.clone_repo("default", "errors")
-ws.set_active("errors")
-repo = ws.open_active()          # or ws.open_repo("errors")
-print(ws.list())                  # ["default", "errors"]
+# Open and analyze
+repo = ws.open_repo("my_repo")
 
-# Low-level: open a repo directly by path
-from lga import LogRepo
-repo = LogRepo.open("./some/path")
+# Collect statistics
+errors = repo.collect_count("ERROR")
+levels = repo.collect_group_count(r"\[(\w+)\]", 1)
+top_clients = repo.collect_top_n(r"clientId=(\d+)", 1, 10)
+latency_stats = repo.collect_numeric_stats(r"latency=(\d+)ms", 1)
 
-# Read lines
-lines = repo.read_lines(0, 10)       # first 10 lines
-line  = repo.read_line(42)           # single line
-
-# Operations (all reversible)
+# Reversible operations
 repo.filter(r"\[ERROR\]", keep=True)
 repo.replace(r"\d{4}-\d{2}-\d{2}", "DATE")
-repo.delete_lines([0, 5, 10])
-repo.insert_lines(0, ["# header"])
-repo.modify_line(3, "new content")
-
-# Undo
 repo.undo()
 
-# Append new data
-repo.append_file("server_day2.log")
-repo.append_text("extra line\n")
-
-# Collectors (read-only, does not modify the repo)
-repo.collect_count("ERROR")                          # -> 4821
-repo.collect_group_count(r"\[(\w+)\]", 1)            # -> {"ERROR": 4821, "INFO": 30102, ...}
-repo.collect_top_n(r"clientId=(\d+)", 1, 5)          # -> [("1234", 500), ...]
-repo.collect_unique(r"src=(\S+)", 1)                  # -> ["10.0.0.1", "10.0.0.2"]
-repo.collect_numeric_stats(r"latency=(\d+)ms", 1)    # -> {"count": ..., "min": ..., "max": ..., "avg": ..., "sum": ...}
-repo.collect_line_stats()                              # -> {"count": ..., "avg_len": ..., ...}
-
-# Streaming (memory-efficient for large files)
-repo.stream_search("ERROR", max_results=100)          # -> [(line_num, content), ...]
-repo.stream_filter_to_file("ERROR", True, "err.log")  # write matches to file
-repo.count_matches("ERROR")                            # count without loading all data
-
-# Search files directly without importing (ripgrep-powered)
-LogRepo.count_file_matches("server.log", "ERROR")     # -> 4821
-LogRepo.search_file("server.log", "ERROR", 10)        # -> [(line_num, content), ...]
-
-# Export and clone
+# Export
 repo.export("output.log")
-cloned = repo.clone_to("./repo_copy")
 ```
 
-## Examples
+## Performance
 
-### Analyzing a large JSON log
+Log Graph Analyzer achieves competitive or superior performance compared to classic command-line tools. On repeated queries against compressed repositories, it is up to **2.3× faster than ripgrep**.
 
-```python
-from lga import LogRepo
+See [doc/benchmarks.md](doc/benchmarks.md) for detailed benchmarks comparing lograph against grep, ripgrep, sed, awk, and Python on a 10 GiB test file.
 
-repo = LogRepo.import_file(".logrepo", "access.log")
+## Project Status
 
-# Count specific messages
-errors = repo.collect_count("ERROR")
-total = repo.metadata().original_line_count
-print(f"errors: {errors:,} / {total:,} ({errors/total*100:.1f}%)")
+Log Graph Analyzer is under active development. The core engine is stable and well-tested. New features, platform support, and performance improvements are ongoing.
 
-# Group by log level
-levels = repo.collect_group_count(r"\[(\w+)\]", 1)
-for level, count in sorted(levels.items(), key=lambda x: -x[1]):
-    print(f"  {level}: {count:,}")
+## Further Reading
 
-# Top 10 clients
-for client_id, count in repo.collect_top_n(r"clientId=(\d+)", 1, 10):
-    print(f"  clientId={client_id}: {count:,}")
-
-# Response time statistics
-stats = repo.collect_numeric_stats(r"latency=(\d+)ms", 1)
-print(f"latency: min={stats['min']:.0f} max={stats['max']:.0f} avg={stats['avg']:.1f}")
-```
-
-### Concatenating split log files
-
-```bash
-lga-cli import logs/part1.log
-lga-cli append logs/part2.log
-lga-cli append logs/part3.log
-lga-cli info   # shows total lines across all parts
-```
-
-### Branching analysis
-
-```bash
-# Import base data
-lga-cli import access.log
-
-# Clone for two independent analyses
-lga-cli repo clone default error_analysis
-lga-cli repo clone default perf_analysis
-
-# Analyze errors
-lga-cli repo use error_analysis
-lga-cli filter '" 500 ' --keep
-lga-cli export 500_errors.log
-
-# Analyze performance (target by name without switching)
-lga-cli filter 'slow\|timeout' --keep --repo perf_analysis
-
-# Original data untouched
-lga-cli view --repo default
-```
-
-### Anonymizing sensitive data
-
-```bash
-lga-cli import access.log
-lga-cli replace '\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}' 'X.X.X.X'
-lga-cli replace 'user=\w+' 'user=REDACTED'
-lga-cli export anonymized.log
-```
-
-## Tag System
-
-Tags mark specific line ranges for scoped operations. Once a tag scope is active, all subsequent operations (filter, search, replace, etc.) only apply to lines within that range. History nodes created under a tag scope record the scope context.
-
-### TUI
-
-| Key | Action |
-|-----|--------|
-| `v` | Start visual line selection |
-| `V` | Start visual selection from cursor |
-| `j/k` or `↑/↓` | Extend selection up/down |
-| `Enter` | Confirm selection → prompt for tag name |
-| `Esc` | Cancel selection |
-| `t` | Open tag manager (list/create/delete/rename/activate) |
-| `T` | Clear active tag scope |
-
-The active tag scope is shown in the status bar. When a scope is active (`t` → select tag → `Enter`), all operations are restricted to the tagged lines. Use `T` to clear the scope.
-
-### CLI
-
-```bash
-lga-cli tag list                          # List all tags
-lga-cli tag create errors --ranges "10-50,100-200"  # Create tag (1-based)
-lga-cli tag delete errors                 # Delete tag
-lga-cli tag rename errors all_errors      # Rename tag
-```
-
-### History Node Operations (TUI only)
-
-In the History view (`h` key), you can manipulate nodes:
-
-| Key | Action |
-|-----|--------|
-| `Space` | Toggle mark on current node (multi-select for merge) |
-| `m` | Merge all marked nodes (OR union of line sets) |
-| `d` | Diff mode: first press selects base node, second press selects subtrahend |
-| `y` | Yank (copy) current node's operation |
-| `p` | Paste yanked operation at cursor position |
-| `D` | Soft-delete current node (pattern preserved in history) |
-
-Node operations are also available via CLI:
-```bash
-lga-cli node merge 1 2 3 --branch combined   # Merge nodes 1,2,3 (OR union)
-lga-cli node subtract 5 3 --branch filtered   # Node 5 minus node 3
-lga-cli node delete 4                         # Soft-delete node 4
-```
-
-### Persistence
-
-Tags are stored in `.log_analyzer/tags.json` in the workspace directory and persist across sessions. The tag store is automatically loaded when entering tag mode.
-
-## Benchmarks
-
-Tested on a 897 MB log file (2.15 million lines). One-time import: **~630 ms**.
-
-Run the benchmark yourself: `python3 benchmarks/bench.py [LOG_FILE]`
-
-### Performance comparison
-
-| Task | grep | ripgrep | sed | awk | Python | lga-cli |
-|------|------|---------|-----|-----|--------|--------------|
-| Count matches | 200 ms | 113 ms | — | 700 ms | 331 ms | **119 ms** |
-| Filter to file | 281 ms | **179 ms** | — | 751 ms | 400 ms | 335 ms |
-| Regex replace | — | 943 ms | 647 ms | — | 7.16 s | **669 ms** |
-| Group-by count | — | 1.25 s* | — | — | 949 ms | **229 ms** |
-
-*\* rg \| sort \| uniq -c pipeline*
-
-**Key takeaways:**
-
-- **Counting**: lga-cli matches ripgrep speed (119 ms vs 113 ms) — uses ripgrep's grep-searcher + zero-copy chunk iteration. Faster than grep, awk, and Python.
-- **Regex replace**: Fastest overall, on par with sed; 10x faster than Python.
-- **Aggregation (group-by, top-N, stats)**: **lga-cli is fastest** — 4x faster than Python, 5.5x faster than rg|sort|uniq pipe.
-- **Filter to file**: 1.9x ripgrep — close after zero-copy optimization (previously 3x).
-
-### Usability comparison
-
-| Feature | grep/rg/sed/awk | lga-cli |
-|---------|-----------------|--------------|
-| Count matches | `grep -c` / `rg -c` | `collect_count(pattern)` |
-| Filter to file | `grep pattern > out` | `stream_filter_to_file()` |
-| Regex replace | `sed -E 's/.../.../'` | `stream_replace_to_file()` |
-| Group-by counting | `rg \| sort \| uniq -c` | `collect_group_count()` |
-| Top-N frequency | `... \| sort \| head -N` | `collect_top_n()` |
-| Numeric stats | awk (manual script) | `collect_numeric_stats()` |
-| Undo last operation | not possible | `undo()` |
-| Operation history | not possible | `history()` |
-| Compressed storage | no (raw files) | zstd chunks |
-| Append / concat files | `cat >> file` | `append_file()` |
-| Branching analysis | `cp -r` + manual | `clone_to()` |
-| Random line access | `sed -n 'Np'` (slow) | `read_line(N)` (indexed) |
-| Python API | subprocess only | native import |
-
-## Project Structure
-
-```
-lga/
-├── build.sh                Build/install/uninstall script
-├── Cargo.toml              Rust package config
-├── pyproject.toml          Python package config (maturin)
-│
-├── src/                    Rust core (compiled to Python extension via PyO3)
-│   ├── lib.rs              PyO3 module entry
-│   ├── bindings.rs         Python class/method bindings
-│   ├── error.rs            Error types
-│   ├── repo/               Log repository
-│   │   ├── mod.rs          LogRepo: create, open, append, operations, undo
-│   │   ├── workspace.rs    Workspace: named repo management, clone, migrate
-│   │   ├── storage.rs      ChunkStorage: zstd compressed chunk I/O
-│   │   └── metadata.rs     RepoMetadata: UUID, timestamps, stats
-│   ├── index/              Line indexing
-│   │   ├── mod.rs          LineIndex: chunk-based line lookup
-│   │   └── builder.rs      IndexBuilder: parallel newline scanning
-│   ├── operator/           Reversible operators
-│   │   ├── mod.rs          Operation enum, InverseData, dispatch
-│   │   ├── filter.rs       Regex filter (keep/remove)
-│   │   ├── replace.rs      Regex replace with capture groups
-│   │   └── crud.rs         DeleteLines, InsertLines, ModifyLine
-│   └── engine/             Streaming processing engine
-│       ├── mod.rs          Shared chunk reading utilities
-│       ├── fast.rs         ripgrep-powered SIMD search (grep-searcher)
-│       ├── stream.rs       LineStream: chunk-by-chunk iterator
-│       ├── processor.rs    ChunkedProcessor: streaming filter/replace/search
-│       └── collector.rs    Collector: count, group_count, top_n, unique, numeric_stats
-│
-├── python/log_analyzer/    Python package
-│   ├── __init__.py         Re-exports LogRepo, RepoMetadata, OperationRecord
-│   └── cli.py              Click CLI (import, append, view, filter, replace, ...)
-│
-├── tests/                  Test suite (80 Rust + 101 Python = 181 tests)
-├── benchmarks/             Performance benchmarks
-│   └── bench.py            Comparison vs grep, rg, sed, awk, Python
-└── .claude/                AI agent skills
-```
-
-### Workspace layout on disk
-
-```
-.logrepo/                       Workspace root
-├── workspace.json              Active repo tracker: {"active": "default"}
-├── default/                    Named repository
-│   ├── meta.json               Repository metadata (ID, source, size, line count)
-│   ├── index.json              Line index (chunk boundaries, byte offsets)
-│   ├── chunks/                 Compressed data chunks
-│   │   ├── 000000.zst
-│   │   ├── 000001.zst
-│   │   └── ...
-│   └── operations.json         Operation journal (for undo/redo)
-├── error_analysis/             Cloned repository (same structure)
-│   └── ...
-└── ...
-```
-
-Old flat `.logrepo/` layouts (pre-workspace) are auto-migrated on first open.
-
-## Testing
-
-```bash
-cargo test                  # Rust tests (80 tests)
-pytest tests/ -v            # Python tests (101 tests)
-./build.sh test             # Build, install, and run all tests
-```
-
-## Distribution
-
-### Build a wheel
-
-```bash
-./build.sh                  # or: maturin build --release
-```
-
-Produces a `.whl` in `target/wheels/` for the current platform + Python version.
-Install on the same platform with:
-
-```bash
-pip install target/wheels/log_analyzer-*.whl
-```
-
-### Cross-platform wheels
-
-Use [maturin](https://github.com/PyO3/maturin) with `--target` or in a manylinux container:
-
-```bash
-# Build manylinux wheel in Docker
-docker run --rm -v $(pwd):/io ghcr.io/pyo3/maturin build --release
-
-# Cross-compile for a specific target
-maturin build --release --target aarch64-unknown-linux-gnu
-```
-
-### Publish to PyPI
-
-```bash
-maturin publish              # Build and upload to PyPI
-maturin publish --repository testpypi   # Test first on TestPyPI
-```
-
-Requires a PyPI account and token (`MATURIN_PYPI_TOKEN` environment variable or `~/.pypirc`).
-
-### Platform matrix
-
-For multi-platform distribution, use CI (e.g. GitHub Actions) to build wheels for each target:
-
-| Platform | Target |
-|----------|--------|
-| Linux x86_64 | `x86_64-unknown-linux-gnu` (manylinux) |
-| Linux aarch64 | `aarch64-unknown-linux-gnu` |
-| macOS x86_64 | `x86_64-apple-darwin` |
-| macOS ARM | `aarch64-apple-darwin` |
-| Windows x86_64 | `x86_64-pc-windows-msvc` |
-
-Each wheel embeds the compiled Rust extension — end users only need `pip install` with no Rust toolchain.
-
-### TUI Binary Downloads
-
-Pre-built `lga` binaries are available from [GitHub Releases](https://github.com/lga/lga/releases). Choose based on your platform:
-
-| Download | Type | Best for |
-|----------|------|----------|
-| `lga-x86_64-unknown-linux-musl` | Static (musl) | **Any Linux distro** — truly portable, no glibc dependency |
-| `lga-aarch64-unknown-linux-musl` | Static (musl) | ARM Linux (Raspberry Pi, AWS Graviton) |
-| `lga-x86_64-unknown-linux-gnu` | Dynamic (glibc ≥ 2.35) | Ubuntu 22.04+, Fedora 36+, Debian 13+ |
-| `lga-x86_64-unknown-linux-gnu-legacy` | Dynamic (glibc ≥ 2.28) | RHEL 8+, CentOS 8+, Debian 10+, Ubuntu 20.04+ |
-| `lga-x86_64-apple-darwin` | macOS Intel | Mac with Intel CPU |
-| `lga-aarch64-apple-darwin` | macOS ARM | Mac with Apple Silicon |
-| `lga-x86_64-pc-windows-msvc` | Windows | Windows 10/11 |
-
-**Recommendation**: On Linux, prefer the **musl** build — it runs on any Linux distribution regardless of installed glibc version. If musl is unavailable for your architecture, choose the GNU build that matches your distribution's glibc.
+- [Architecture](doc/architecture.md) — System architecture and data flow
+- [Development Guide](doc/development.md) — Project structure, building, and distribution
+- [Design Decisions](doc/design.md) — Why we made the choices we did
+- [Benchmarks](doc/benchmarks.md) — Detailed performance measurements
 
 ## License
 

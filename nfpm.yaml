@@ -5,15 +5,15 @@
 #   ./build.sh pkg          # build deb + rpm for current platform
 #   ./build.sh ci           # build wheels + deb + rpm
 
-name: lga
+name: lograph
 arch: __ARCH__
 version: __VERSION__
-maintainer: lga contributors
+maintainer: Log Graph Analyzer contributors
 description: |
-  High-performance log analysis tool for large text files (>10GB).
-  Rust backend with zstd compression, ripgrep-powered search,
-  reversible operations, and Python CLI.
-vendor: lga
+  Log Graph Analyzer — high-performance log analysis tool with
+  compressed storage, Git-like history DAG, reversible operations,
+  streaming engine, and Python CLI. Designed for files >10GB.
+vendor: log-graph-analyzer
 homepage: https://github.com/log-analyzer/log-analyzer
 license: MIT
 
@@ -22,17 +22,17 @@ depends:
 
 contents:
   # The self-contained virtualenv
-  - src: __STAGING__/opt/lga/
-    dst: /opt/lga/
+  - src: __STAGING__/opt/lograph/
+    dst: /opt/lograph/
     type: tree
 
   # CLI entry point wrapper
-  - src: __STAGING__/usr/bin/lga-cli
-    dst: /usr/bin/lga-cli
+  - src: __STAGING__/usr/bin/lograph-cli
+    dst: /usr/bin/lograph-cli
 
   # TUI binary
-  - src: __STAGING__/usr/bin/lga
-    dst: /usr/bin/lga
+  - src: __STAGING__/usr/bin/lograph
+    dst: /usr/bin/lograph
 
 scripts:
   postinstall: "__STAGING__/postinstall.sh"

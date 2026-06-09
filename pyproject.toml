@@ -3,9 +3,9 @@ requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "lga"
+name = "lograph"
 version = "0.0.1"
-description = "High-performance log analysis tool for large text files (>10GB)"
+description = "Log Graph Analyzer — high-performance log analysis tool for large text files (>10GB)"
 requires-python = ">=3.10"
 dependencies = [
     "click>=8.0",
@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [project.scripts]
-lga-cli = "lga.cli:main"
+lograph-cli = "lograph.cli:main"
 
 [project.optional-dependencies]
 dev = [
@@ -23,7 +23,7 @@ dev = [
 
 [tool.maturin]
 python-source = "python"
-module-name = "lga._core"
+module-name = "lograph._core"
 features = ["python-bindings"]
 
 [tool.pytest.ini_options]

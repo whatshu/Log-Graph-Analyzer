@@ -1,4 +1,4 @@
-"""CLI frontend for lga-cli."""
+"""CLI frontend for lograph-cli — Log Graph Analyzer."""
 
 import os
 import sys
@@ -7,7 +7,7 @@ import click
 from rich.console import Console
 from rich.table import Table
 
-from lga._core import LogRepo, TagStore, Workspace
+from lograph._core import LogRepo, TagStore, Workspace
 
 console = Console()
 
@@ -37,9 +37,9 @@ def open_repo(workspace: str | None, repo: str | None):
 @click.group()
 @click.version_option(version="0.1.0")
 def main():
-    """lga-cli: High-performance log analysis tool for large text files.
+    """lograph-cli — Log Graph Analyzer: high-performance log analysis for large text files.
 
-    Stores logs in compressed repositories with full operation history
+    Stores logs in compressed repositories with Git-like history DAG
     and undo support. Designed for files >10GB.
 
     Use --repo NAME to target a specific repo (default: active repo).
@@ -413,7 +413,7 @@ def merge(sources: tuple[str, ...], target: str, workspace: str | None):
     will be concatenated in the given order into a new repo TARGET.
 
     Example:
-      lga-cli merge repoA repoB repoC --into combined
+      lograph-cli merge repoA repoB repoC --into combined
     """
     ws = get_workspace(workspace)
     if not ws.is_initialized():

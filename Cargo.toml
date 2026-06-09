@@ -1,19 +1,19 @@
 [package]
-name = "lga_core"
+name = "lograph"
 version = "0.0.1"
 edition = "2021"
-description = "High-performance log analysis engine with compressed storage and reversible operations"
+description = "Log Graph Analyzer — high-performance log analysis with compressed storage, Git-like history DAG, and reversible operations"
 
 [features]
 default = ["python-bindings"]
 python-bindings = ["pyo3/extension-module"]
 
 [lib]
-name = "lga_core"
+name = "lograph"
 crate-type = ["cdylib", "rlib"]
 
 [[bin]]
-name = "lga"
+name = "lograph"
 path = "src/main.rs"
 
 [dependencies]

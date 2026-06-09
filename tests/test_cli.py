@@ -10,7 +10,7 @@ import tempfile
 import pytest
 from click.testing import CliRunner
 
-from lga.cli import main
+from lograph.cli import main
 
 
 @pytest.fixture
@@ -416,7 +416,7 @@ class TestTagStore:
     """Test the TagStore Python bindings directly."""
 
     def test_create_and_list_tags(self, ws):
-        from lga._core import TagStore
+        from lograph._core import TagStore
 
         ts = TagStore(ws)
         ts.add_tag("test", "errors", [(0, 10), (20, 30)])
@@ -426,7 +426,7 @@ class TestTagStore:
         assert tags[0].ranges == [(0, 10), (20, 30)]
 
     def test_add_tag_replaces_same_name(self, ws):
-        from lga._core import TagStore
+        from lograph._core import TagStore
 
         ts = TagStore(ws)
         ts.add_tag("test", "mytag", [(0, 5)])
@@ -436,7 +436,7 @@ class TestTagStore:
         assert tags[0].ranges == [(10, 20)]
 
     def test_remove_tag(self, ws):
-        from lga._core import TagStore
+        from lograph._core import TagStore
 
         ts = TagStore(ws)
         ts.add_tag("test", "temp", [(0, 1)])
@@ -445,7 +445,7 @@ class TestTagStore:
         assert len(ts.get_tags("test")) == 0
 
     def test_rename_tag(self, ws):
-        from lga._core import TagStore
+        from lograph._core import TagStore
 
         ts = TagStore(ws)
         ts.add_tag("test", "old", [(0, 5)])
@@ -455,7 +455,7 @@ class TestTagStore:
         assert tags[0].name == "new"
 
     def test_next_auto_name(self, ws):
-        from lga._core import TagStore
+        from lograph._core import TagStore
 
         ts = TagStore(ws)
         assert ts.next_auto_name("test") == "tag_1"
@@ -464,7 +464,7 @@ class TestTagStore:
         assert ts.next_auto_name("test") == "tag_2"
 
     def test_make_scope(self, ws):
-        from lga._core import TagStore
+        from lograph._core import TagStore
 
         ts = TagStore(ws)
         ts.add_tag("test", "scope1", [(10, 50)])
@@ -474,7 +474,7 @@ class TestTagStore:
         assert scope.ranges == [(10, 50)]
 
     def test_tags_isolated_per_repo(self, ws):
-        from lga._core import TagStore
+        from lograph._core import TagStore
 
         ts = TagStore(ws)
         ts.add_tag("repo_a", "errors", [(0, 10)])
@@ -486,7 +486,7 @@ class TestTagStore:
 
     def test_tag_persistence_roundtrip(self, ws):
         """Tags should survive save/load cycle."""
-        from lga._core import TagStore
+        from lograph._core import TagStore
 
         ts1 = TagStore(ws)
         ts1.add_tag("test", "persist", [(1, 10)])
@@ -623,7 +623,7 @@ class TestTagScopedOperations:
         """Filter within tag scope should only affect tagged lines."""
         import tempfile
         import os
-        from lga._core import LogRepo, TagStore
+        from lograph._core import LogRepo, TagStore
 
         with tempfile.TemporaryDirectory() as d:
             repo_path = os.path.join(d, "repo")

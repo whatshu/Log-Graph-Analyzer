@@ -4,7 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Tabs};
 use ratatui::Frame;
 
-use lga_core::repo::LogRepo;
+use lograph::repo::LogRepo;
 
 use super::app::{App, InputMode, ViewKind};
 use super::file_browser;

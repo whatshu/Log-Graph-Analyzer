@@ -1,147 +1,105 @@
-# lga
+# Log Graph Analyzer
 
 [English](README.md)
 
-高性能日志分析工具，**Rust** 后端 + **Python** CLI 前端。面向 **10GB+** 的文本日志文件设计，将日志存储在压缩仓库中，支持完整的操作历史和撤销。内部使用 [ripgrep](https://github.com/BurntSushi/ripgrep) 的 SIMD 加速搜索引擎。
+**lograph 是 Log Graph Analyzer 的命令行界面。** —
+一个高性能日志分析工具，将日志数据视为操作图谱，支持可逆过滤、分支分析和撤销操作。专为 **10 GB 以上**的文本日志文件设计。
 
-## 特性
+## 什么是 Log Graph Analyzer？
 
-- **压缩存储** — 日志按块分割后使用 zstd 压缩。900 MB 文件在磁盘上通常压缩至约 100 MB。
-- **可逆操作** — 所有操作（过滤、替换、删除、插入、修改）均记录逆向数据，支持无限次撤销。
-- **Git 风格仓库** — 每个仓库维护操作日志。仓库可克隆，用于并行分析分支。
-- **流式引擎** — 逐块过滤、替换、搜索和统计，无需将整个文件加载到内存。
-- **收集器 (Collector)** — 只读终端操作（参考 Java Stream Collectors），用于聚合：计数、分组、Top-N、去重、数值统计。
-- **ripgrep 加速搜索** — 模式匹配使用 [grep-searcher](https://crates.io/crates/grep-searcher)，具备 ripgrep 生态的 SIMD 字面量优化。
-- **多线程** — 通过 [rayon](https://github.com/rayon-rs/rayon) 并行处理块：索引构建、过滤、搜索、收集。
-- **追加** — 向现有仓库增量添加新日志数据，无需重新导入。
-- **Python API** — 通过 [PyO3](https://pyo3.rs) 将完整 Rust 功能暴露给 Python，可作为库使用也可通过 CLI 调用。
+Log Graph Analyzer 帮助你交互式地探索和分析大型日志文件。不再需要运行一次性的 `grep` 命令——只需**导入**一次日志文件，就可以**过滤**、**搜索**、**替换**和**统计**，并支持完整的**撤销**和**分支**功能。可以把它看作是"日志版的 Git"。
 
-## 构建
-
-需要 **Python >= 3.10** 和 **Rust 工具链**（rustc + cargo）。
-
-提供 `build.sh` 脚本用于所有构建任务：
-
-```bash
-./build.sh                    # 仅编译 release wheel（不安装）
-./build.sh --dev              # 仅编译 debug wheel
-./build.sh install            # 编译 release 并安装
-./build.sh install --dev      # 可编辑开发模式安装
-./build.sh uninstall          # 卸载
-./build.sh test               # 安装并运行全部测试
-```
-
-或手动：
-
-```bash
-pip install -e ".[dev]"       # 可编辑安装（使用 maturin）
-maturin build --release       # 构建 .whl 到 target/wheels/
-```
-
-## 调用方式
-
-lga-cli 支持四种不同的使用方式：
-
-### 1. Python CLI 命令行 (`lga-cli`)
-
-主要使用方式。通过 pip 安装为 console script：
-
-```bash
-pip install -e ".[dev]"
-lga-cli --help
-```
-
-所有日志操作（import、filter、replace、search、undo、export 等）和仓库管理命令（`repo list`、`clone`、`remove` 等）均可通过 CLI 使用。详见下方[快速开始](#快速开始)和 [CLI 命令参考](#cli-命令参考)。
-
-### 2. Rust 原生 TUI (`lga`)
-
-基于 ratatui + crossterm 的交互式终端界面。通过 `lga` 二进制启动：
-
-```bash
-cargo run --                                          # 开发模式
-cargo build --release && ./target/release/la           # 发布构建
-
-# 参数
-la -w .logrepo -r myrepo    # 指定工作区和仓库
-```
-
-提供可视化的操作历史树、文件浏览器、操作栏和 tmux 支持。
-
-#### 终端兼容性
-
-TUI 可在大多数现代终端中使用。已知兼容的终端：
-
-- **Linux**: xterm, gnome-terminal, konsole, alacritty, kitty, st, tmux, screen
-- **macOS**: Terminal.app, iTerm2, alacritty, kitty
-- **Windows**: Windows Terminal, alacritty, wezterm
-
-**要求**: 终端必须支持 ANSI 转义序列（交替屏幕、raw 模式）。大多数终端模拟器均支持。以下环境无法运行：`TERM=dumb`、CI 运行器、无 pty 的裸 `sh`。
-
-**ASCII 降级**: 如果 locale 未报告 UTF-8（例如 `LANG=C`），TUI 会自动切换为 ASCII 安全字符：树形连接器使用 `|`/`` ` ``/`-`，项目符号使用 `*`/`o`，文件图标使用 `[D]`/`[F]`。
-
-**崩溃安全**: 内置 panic hook 确保即使应用崩溃，终端也能恢复（退出交替屏幕、重新显示光标）。
-
-### 3. Python 库导入
-
-在脚本或 notebook 中以编程方式导入使用：
-
-```python
-from lga import Workspace, LogRepo
-
-ws = Workspace(".logrepo")
-repo = ws.import_file("server.log", "my_repo")
-repo.filter("ERROR", keep=True)
-repo.export("output.log")
-```
-
-完整 API 参考见 [Python API](#python-api)。
-
-### 4. Rust 库引入
-
-在其他 Rust 项目中使用核心引擎：
-
-```toml
-[dependencies]
-lga_core = { path = "/path/to/log-analyzer", default-features = false }
-```
-
-```rust
-use lga_core::repo;
-use lga_core::engine;
-```
-
-关闭默认 features 可跳过 Python 绑定，获得纯 Rust 库。
+- 🗜️ **压缩存储** — 使用 zstd 将日志压缩至原始大小的 40%
+- 🌳 **历史图谱** — 每个操作都是 DAG 中的一个节点；支持分支、合并和对比
+- ↩️ **无限撤销** — 所有操作都可逆
+- 📊 **内置分析** — 计数、分组、Top-N、去重、数值统计
+- ⚡ **快速搜索** — 基于 ripgrep 的 SIMD 加速搜索引擎
+- 🖥️ **TUI + CLI** — 交互式终端界面或可脚本化的命令行
+- 🐍 **Python API** — 可在自己的脚本和 notebook 中作为库使用
 
 ## 快速开始
 
+### 安装
+
 ```bash
-# 导入日志文件（创建 "default" 仓库）
-lga-cli import server.log
+# 通过 pip 安装（包含 lograph-cli 和 Python 库）
+pip install lograph
+
+# 或使用 cargo 仅安装 TUI 二进制
+cargo install lograph --no-default-features
+```
+
+### 首次分析
+
+```bash
+# 导入日志文件
+lograph-cli import server.log
 
 # 查看前 20 行
-lga-cli view
+lograph-cli view
+
+# 统计所有 ERROR 行
+lograph-cli stats count ERROR
 
 # 过滤保留 ERROR 行
-lga-cli filter "ERROR" --keep
+lograph-cli filter ERROR --keep
 
 # 撤销过滤
-lga-cli undo
+lograph-cli undo
 
-# 克隆出独立分析分支
-lga-cli repo clone default errors
-lga-cli repo use errors
-lga-cli filter "ERROR" --keep
-
-# 切回原始——数据不受影响
-lga-cli repo use default
-lga-cli view
-
-# 列出所有 repo
-lga-cli repo list
-
-# 导出
-lga-cli export filtered.log
+# 导出当前状态
+lograph-cli export filtered.log
 ```
+
+### 使用 TUI
+
+```bash
+# 启动交互式终端界面
+lograph
+
+# 或指定工作区和仓库
+lograph -w .logrepo -r myrepo
+```
+
+在 TUI 中按 `?` 查看所有快捷键。
+
+## 功能特性
+
+### Git 风格的历史图谱
+
+每个操作都会成为历史图谱中的一个节点。你可以：
+
+- **分支** — 从任意节点分支出独立的分析路径
+- **合并** — 合并节点以组合过滤结果
+- **对比** — 比较两个节点的差异
+- **撤销** — 在图中向后移动以撤销操作
+
+### 收集器（内置分析）
+
+受 Java Stream Collectors 启发的只读聚合操作：
+
+| 收集器 | 描述 | 示例 |
+|--------|------|------|
+| `count` | 计数匹配行 | `stats count ERROR` |
+| `group-count` | 按捕获组分组 | `stats group-count '\[(\w+)\]'` |
+| `top` | Top-N 频率 | `stats top 'clientId=(\d+)' -n 10` |
+| `distinct` | 去重值 | `stats distinct 'src=(\S+)'` |
+| `numbers` | 数值统计 (min/max/avg/sum) | `stats numbers 'latency=(\d+)ms'` |
+
+### 标签系统
+
+用命名标签标记行范围，实现局部操作。可仅在标记区域内进行过滤、搜索和统计。
+
+### 流式引擎
+
+逐块处理 10 GB 以上的文件，无需将全部数据加载到内存。可在单遍流式处理中过滤、搜索或收集统计信息。
+
+### 四种使用方式
+
+1. **`lograph`** — 交互式终端界面（ratatui + crossterm）
+2. **`lograph-cli`** — 用于脚本的命令行界面
+3. **Python 库** — `from lograph import Workspace, LogRepo`
+4. **Rust 库** — 在 Cargo.toml 中添加 `lograph = "0.0.1"`（禁用默认 features）
 
 ## CLI 命令参考
 
@@ -155,8 +113,8 @@ lga-cli export filtered.log
 | `view` | 查看当前状态的日志行 |
 | `search <pattern>` | 搜索匹配正则的行（只读） |
 | `filter <pattern>` | 保留（`--keep`）或移除（`--remove`）匹配行 |
-| `replace <pattern> <replacement>` | 正则替换（支持 `$1`、`$2` 捕获组） |
-| `delete <indices...>` | 按 0 起始索引删除行 |
+| `replace <pattern> <replacement>` | 正则替换（支持捕获组） |
+| `delete <indices...>` | 按索引删除行 |
 | `insert <after> <content...>` | 在指定位置后插入行 |
 | `modify <index> <content>` | 替换单行内容 |
 | `undo` | 撤销上一个操作 |
@@ -172,281 +130,72 @@ lga-cli export filtered.log
 | `repo clone <src> <dst>` | 按名称克隆仓库 |
 | `repo remove <name>` | 删除仓库 |
 
-所有日志命令支持 `--repo <name>` 指定目标仓库（默认：活跃仓库）。
-工作区目录默认为 `.logrepo/`，可通过 `--workspace <path>` 修改。
+### 分析统计 (stats)
+
+| 命令 | 说明 |
+|------|------|
+| `stats overview` | 概览统计 |
+| `stats count [pattern]` | 计数（可选过滤） |
+| `stats group-count <p>` | 按捕获组分组 |
+| `stats top <p>` | Top-N 频率 |
+| `stats distinct <p>` | 去重值 |
+| `stats numbers <p>` | 数值统计 |
+
+### 其他
+
+| 命令 | 说明 |
+|------|------|
+| `branch list/create/checkout/delete` | 管理分析分支 |
+| `node merge/subtract/delete` | 历史节点操作 |
+| `tag list/create/delete/rename` | 标签管理 |
+| `merge <srcs> --into <tgt>` | 合并多个仓库 |
+| `search-file <file> <p>` | 直接搜索文件（无需导入） |
 
 ## Python API
 
 ```python
-from lga import LogRepo
+from lograph import Workspace
 
-# 导入
-repo = LogRepo.import_file("./repo", "server.log")
+# 打开工作区
+ws = Workspace(".logrepo")
 
-# 或打开已有仓库
-repo = LogRepo.open("./repo")
+# 导入日志文件
+ws.import_file("server.log", "my_repo")
 
-# 读取
-lines = repo.read_lines(0, 10)       # 前 10 行
-line  = repo.read_line(42)           # 单行
+# 打开并分析
+repo = ws.open_repo("my_repo")
 
-# 操作（均可撤销）
+# 统计
+errors = repo.collect_count("ERROR")
+levels = repo.collect_group_count(r"\[(\w+)\]", 1)
+top_clients = repo.collect_top_n(r"clientId=(\d+)", 1, 10)
+latency_stats = repo.collect_numeric_stats(r"latency=(\d+)ms", 1)
+
+# 可逆操作
 repo.filter(r"\[ERROR\]", keep=True)
 repo.replace(r"\d{4}-\d{2}-\d{2}", "DATE")
-repo.delete_lines([0, 5, 10])
-repo.insert_lines(0, ["# 头部"])
-repo.modify_line(3, "新内容")
-
-# 撤销
 repo.undo()
 
-# 追加新数据
-repo.append_file("server_day2.log")
-repo.append_text("额外的一行\n")
-
-# 收集器（只读，不修改仓库）
-repo.collect_count("ERROR")                          # -> 4821
-repo.collect_group_count(r"\[(\w+)\]", 1)            # -> {"ERROR": 4821, "INFO": 30102, ...}
-repo.collect_top_n(r"clientId=(\d+)", 1, 5)          # -> [("1234", 500), ...]
-repo.collect_unique(r"src=(\S+)", 1)                  # -> ["10.0.0.1", "10.0.0.2"]
-repo.collect_numeric_stats(r"latency=(\d+)ms", 1)    # -> {"count": ..., "min": ..., ...}
-repo.collect_line_stats()                              # -> {"count": ..., "avg_len": ..., ...}
-
-# 流式处理（大文件内存友好）
-repo.stream_search("ERROR", max_results=100)
-repo.stream_filter_to_file("ERROR", True, "err.log")
-repo.count_matches("ERROR")
-
-# 导出与克隆
+# 导出
 repo.export("output.log")
-cloned = repo.clone_to("./repo_copy")
 ```
 
-## 示例
+## 性能
 
-### 分析 900 MB JSON 日志
+Log Graph Analyzer 在性能上与传统命令行工具相当或更优。在压缩仓库上重复查询时，可比 ripgrep 快 **2.3 倍**。
 
-```python
-from lga import LogRepo
+详见 [doc/benchmarks.md](doc/benchmarks.md)，其中对比了 lograph 与 grep、ripgrep、sed、awk 和 Python 在 10 GiB 测试文件上的详细基准测试。
 
-repo = LogRepo.import_file(".logrepo", "access.log")
+## 项目状态
 
-# 统计错误
-errors = repo.collect_count("ERROR")
-total = repo.metadata().original_line_count
-print(f"errors: {errors:,} / {total:,} ({errors/total*100:.1f}%)")
+Log Graph Analyzer 正在活跃开发中。核心引擎稳定且经过充分测试。新功能、平台支持和性能改进正在进行中。
 
-# 按日志级别分组
-levels = repo.collect_group_count(r"\[(\w+)\]", 1)
-for level, count in sorted(levels.items(), key=lambda x: -x[1]):
-    print(f"  {level}: {count:,}")
+## 延伸阅读
 
-# Top 10 客户端
-for client_id, count in repo.collect_top_n(r"clientId=(\d+)", 1, 10):
-    print(f"  clientId={client_id}: {count:,}")
-
-# 响应时间统计
-stats = repo.collect_numeric_stats(r"latency=(\d+)ms", 1)
-print(f"latency: min={stats['min']:.0f} max={stats['max']:.0f} avg={stats['avg']:.1f}")
-```
-
-### 拼接分段日志
-
-```bash
-lga-cli import logs/part1.log
-lga-cli append logs/part2.log
-lga-cli append logs/part3.log
-lga-cli info   # 显示所有分段的总行数
-```
-
-### 分支分析
-
-```bash
-# 导入基础数据
-lga-cli import access.log
-
-# 克隆出两个独立分析分支
-lga-cli repo clone default error_analysis
-lga-cli repo clone default perf_analysis
-
-# 分析错误
-lga-cli repo use error_analysis
-lga-cli filter '" 500 ' --keep
-lga-cli export 500_errors.log
-
-# 分析性能（通过名称指定，无需切换）
-lga-cli filter 'slow\|timeout' --keep --repo perf_analysis
-
-# 原始数据不受影响
-lga-cli view --repo default
-```
-
-### 敏感数据脱敏
-
-```bash
-lga-cli import access.log
-lga-cli replace '\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}' 'X.X.X.X'
-lga-cli replace 'user=\w+' 'user=REDACTED'
-lga-cli export anonymized.log
-```
-
-## 性能基准
-
-测试文件：897 MB 日志（215 万行）。一次性导入：**~630 ms**。
-
-运行基准测试：`python3 benchmarks/bench.py [LOG_FILE]`
-
-### 性能对比
-
-| 任务 | grep | ripgrep | sed | awk | Python | lga-cli |
-|------|------|---------|-----|-----|--------|--------------|
-| 计数匹配 | 200 ms | 113 ms | — | 700 ms | 331 ms | **119 ms** |
-| 过滤写文件 | 281 ms | **179 ms** | — | 751 ms | 400 ms | 335 ms |
-| 正则替换 | — | 943 ms | 647 ms | — | 7.16 s | **669 ms** |
-| 分组计数 | — | 1.25 s* | — | — | 949 ms | **229 ms** |
-
-*\* rg \| sort \| uniq -c 管道*
-
-**要点：**
-
-- **计数**：lga-cli 追平 ripgrep（119 ms vs 113 ms）— 内部使用 grep-searcher + 零拷贝块迭代。快于 grep、awk、Python。
-- **正则替换**：总体最快，与 sed 持平；比 Python 快 10 倍。
-- **聚合（分组、Top-N、统计）**：**lga-cli 最快** — 比 Python 快 4 倍，比 rg|sort|uniq 管道快 5.5 倍。
-- **过滤写文件**：1.9x ripgrep — 零拷贝优化后接近（此前 3x）。
-
-### 易用性对比
-
-| 功能 | grep/rg/sed/awk | lga-cli |
-|------|-----------------|--------------|
-| 计数匹配 | `grep -c` / `rg -c` | `collect_count(pattern)` |
-| 过滤写文件 | `grep pattern > out` | `stream_filter_to_file()` |
-| 正则替换 | `sed -E 's/.../.../'` | `stream_replace_to_file()` |
-| 分组计数 | `rg \| sort \| uniq -c` | `collect_group_count()` |
-| Top-N 频率 | `... \| sort \| head -N` | `collect_top_n()` |
-| 数值统计 | awk（手写脚本） | `collect_numeric_stats()` |
-| 撤销操作 | 不可能 | `undo()` |
-| 操作历史 | 不可能 | `history()` |
-| 压缩存储 | 无（原始文件） | zstd 分块 |
-| 追加/拼接文件 | `cat >> file` | `append_file()` |
-| 分支分析 | `cp -r` + 手动 | `clone_to()` |
-| 随机行访问 | `sed -n 'Np'`（慢） | `read_line(N)`（有索引） |
-| Python API | 仅 subprocess | 原生 import |
-
-## 项目结构
-
-```
-lga/
-├── build.sh                构建/安装/卸载脚本
-├── Cargo.toml              Rust 包配置
-├── pyproject.toml          Python 包配置（maturin）
-│
-├── src/                    Rust 核心（通过 PyO3 编译为 Python 扩展）
-│   ├── lib.rs              PyO3 模块入口
-│   ├── bindings.rs         Python 类/方法绑定
-│   ├── error.rs            错误类型
-│   ├── repo/               日志仓库
-│   │   ├── mod.rs          LogRepo：创建、打开、追加、操作、撤销
-│   │   ├── workspace.rs    Workspace：命名仓库管理、克隆、迁移
-│   │   ├── storage.rs      ChunkStorage：zstd 压缩块 I/O
-│   │   └── metadata.rs     RepoMetadata：UUID、时间戳、统计
-│   ├── index/              行索引
-│   │   ├── mod.rs          LineIndex：基于块的行查找
-│   │   └── builder.rs      IndexBuilder：并行换行符扫描
-│   ├── operator/           可逆操作符
-│   │   ├── mod.rs          Operation 枚举、InverseData、分发
-│   │   ├── filter.rs       正则过滤（保留/移除）
-│   │   ├── replace.rs      正则替换（支持捕获组）
-│   │   └── crud.rs         DeleteLines、InsertLines、ModifyLine
-│   └── engine/             流式处理引擎
-│       ├── mod.rs          共享块读取工具
-│       ├── fast.rs         ripgrep 驱动的 SIMD 搜索（grep-searcher）
-│       ├── stream.rs       LineStream：逐块迭代器
-│       ├── processor.rs    ChunkedProcessor：流式过滤/替换/搜索
-│       └── collector.rs    Collector：计数、分组、Top-N、去重、数值统计
-│
-├── python/log_analyzer/    Python 包
-│   ├── __init__.py         导出 LogRepo、RepoMetadata、OperationRecord
-│   └── cli.py              Click CLI
-│
-├── tests/                  测试套件（80 Rust + 101 Python = 181 个测试）
-├── benchmarks/             性能基准测试
-│   └── bench.py            与 grep、rg、sed、awk、Python 对比
-└── .claude/                AI agent skills
-```
-
-## 测试
-
-```bash
-cargo test                  # Rust 测试（80 个）
-pytest tests/ -v            # Python 测试（101 个）
-./build.sh test             # 构建、安装并运行全部测试
-```
-
-## 分发
-
-### 构建 wheel
-
-```bash
-./build.sh                  # 或: maturin build --release
-```
-
-在 `target/wheels/` 下生成当前平台 + Python 版本的 `.whl` 文件。
-同平台安装：
-
-```bash
-pip install target/wheels/log_analyzer-*.whl
-```
-
-### 跨平台构建
-
-使用 [maturin](https://github.com/PyO3/maturin) 配合 `--target` 或 manylinux 容器：
-
-```bash
-# 在 Docker 中构建 manylinux wheel
-docker run --rm -v $(pwd):/io ghcr.io/pyo3/maturin build --release
-
-# 交叉编译到特定目标
-maturin build --release --target aarch64-unknown-linux-gnu
-```
-
-### 发布到 PyPI
-
-```bash
-maturin publish              # 构建并上传到 PyPI
-maturin publish --repository testpypi   # 先在 TestPyPI 测试
-```
-
-需要 PyPI 账户和令牌（`MATURIN_PYPI_TOKEN` 环境变量或 `~/.pypirc`）。
-
-### 平台矩阵
-
-多平台分发建议使用 CI（如 GitHub Actions）为每个目标构建 wheel：
-
-| 平台 | 目标 |
-|------|------|
-| Linux x86_64 | `x86_64-unknown-linux-gnu`（manylinux） |
-| Linux aarch64 | `aarch64-unknown-linux-gnu` |
-| macOS x86_64 | `x86_64-apple-darwin` |
-| macOS ARM | `aarch64-apple-darwin` |
-| Windows x86_64 | `x86_64-pc-windows-msvc` |
-
-每个 wheel 内嵌编译好的 Rust 扩展——终端用户只需 `pip install`，无需 Rust 工具链。
-
-### TUI 二进制下载
-
-预构建的 `lga` 二进制可从 [GitHub Releases](https://github.com/lga/lga/releases) 下载。根据平台选择：
-
-| 下载文件 | 类型 | 适用环境 |
-|----------|------|----------|
-| `lga-x86_64-unknown-linux-musl` | 静态链接 (musl) | **任意 Linux 发行版** — 真正可移植，无需 glibc |
-| `lga-aarch64-unknown-linux-musl` | 静态链接 (musl) | ARM Linux（树莓派、AWS Graviton） |
-| `lga-x86_64-unknown-linux-gnu` | 动态链接 (glibc ≥ 2.35) | Ubuntu 22.04+、Fedora 36+、Debian 13+ |
-| `lga-x86_64-unknown-linux-gnu-legacy` | 动态链接 (glibc ≥ 2.28) | RHEL 8+、CentOS 8+、Debian 10+、Ubuntu 20.04+ |
-| `lga-x86_64-apple-darwin` | macOS Intel | Intel CPU 的 Mac |
-| `lga-aarch64-apple-darwin` | macOS ARM | Apple Silicon Mac |
-| `lga-x86_64-pc-windows-msvc` | Windows | Windows 10/11 |
-
-**推荐**: Linux 上优先使用 **musl** 版本——可在任意 Linux 发行版运行，不受 glibc 版本限制。如果 musl 版本不适用于你的架构，请选择与你发行版 glibc 匹配的 GNU 版本。
+- [架构](doc/architecture.md) — 系统架构与数据流
+- [开发指南](doc/development.md) — 项目结构、构建和分发
+- [设计决策](doc/design.md) — 我们做出这些选择的原因
+- [性能基准](doc/benchmarks.md) — 详细的性能测量
 
 ## 许可证
 

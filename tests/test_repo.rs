@@ -1,8 +1,8 @@
 use std::fs;
 use tempfile::TempDir;
 
-use lga_core::operator::Operation;
-use lga_core::repo::LogRepo;
+use lograph::operator::Operation;
+use lograph::repo::LogRepo;
 
 fn create_test_log(lines: usize) -> String {
     (0..lines)
@@ -719,7 +719,7 @@ fn test_collect_original() {
     assert_eq!(repo.current_line_count().unwrap(), 2);
 
     // collect_original should see all 4 lines
-    use lga_core::engine::{CollectResult, Collector};
+    use lograph::engine::{CollectResult, Collector};
     let result = repo
         .collect_original(&Collector::Count { pattern: None })
         .unwrap();
@@ -770,7 +770,7 @@ fn test_apply_operation_with_tag_scope() {
     let data = b"INFO msg1\nERROR msg2\nWARN msg3\nERROR msg4\nDEBUG msg5\n";
     let mut repo = LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
 
-    let scope = lga_core::tag::TagScopeRef {
+    let scope = lograph::tag::TagScopeRef {
         tag_name: "errors".into(),
         ranges: vec![(1, 3)], // Lines 1-3 (0-based): ERROR msg2, WARN msg3, ERROR msg4
     };
@@ -806,7 +806,7 @@ fn test_apply_operation_scoped_outside_lines_preserved() {
     let data = b"A\nB\nC\nD\nE\n";
     let mut repo = LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
 
-    let scope = lga_core::tag::TagScopeRef {
+    let scope = lograph::tag::TagScopeRef {
         tag_name: "middle".into(),
         ranges: vec![(1, 2)], // Only lines B and C
     };
@@ -834,7 +834,7 @@ fn test_apply_operation_multiple_ranges_in_scope() {
     let data = b"0:A\n1:B\n2:C\n3:D\n4:E\n5:F\n";
     let mut repo = LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
 
-    let scope = lga_core::tag::TagScopeRef {
+    let scope = lograph::tag::TagScopeRef {
         tag_name: "multi".into(),
         ranges: vec![(0, 1), (4, 5)], // Lines 0-1 and 4-5
     };
@@ -1014,7 +1014,7 @@ fn test_replay_node_preserves_tag_scope() {
     let data = b"A\nB\nC\nD\nE\n";
     let mut repo = LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
 
-    let scope = lga_core::tag::TagScopeRef {
+    let scope = lograph::tag::TagScopeRef {
         tag_name: "test-scope".into(),
         ranges: vec![(1, 3)],
     };
@@ -1086,7 +1086,7 @@ fn test_history_tree_shows_tag_name() {
     let data = b"A\nB\nC\n";
     let mut repo = LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
 
-    let scope = lga_core::tag::TagScopeRef {
+    let scope = lograph::tag::TagScopeRef {
         tag_name: "important".into(),
         ranges: vec![(0, 1)],
     };

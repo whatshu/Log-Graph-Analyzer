@@ -1,6 +1,6 @@
 /// Integration tests for HistoryTree in the context of LogRepo.
-use lga_core::operator::Operation;
-use lga_core::repo::LogRepo;
+use lograph::operator::Operation;
+use lograph::repo::LogRepo;
 use std::fs;
 use tempfile::TempDir;
 

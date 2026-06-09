@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Performance benchmark: lga vs common text processing tools.
+Performance benchmark: lograph vs common text processing tools.
 
 Compares against grep, ripgrep (rg), awk, and Python stdlib on realistic
 tasks using the same log file. Measures wall-clock time for each.
@@ -87,9 +87,9 @@ print(f"Log file:  {LOG_FILE} ({FILE_SIZE_MB:.0f} MB)")
 print(f"Repo path: {REPO_PATH}")
 print()
 
-print("Importing into lga repo (one-time cost)...")
+print("Importing into lograph repo (one-time cost)...")
 t0 = time.perf_counter()
-from lga import LogRepo
+from lograph import LogRepo
 repo = LogRepo.import_file(REPO_PATH, LOG_FILE)
 import_time = time.perf_counter() - t0
 meta = repo.metadata()
@@ -142,15 +142,15 @@ t, out = run_python(py_count)
 results.append(Result("python", TASK, t, out))
 print(f"  python:           {fmt(t)}  result={out}")
 
-# log-analyzer (collector on repo, already imported)
+# log-analyzer → now lograph
 t, out = run_python(lambda: repo.collect_count(PATTERN))
-results.append(Result("lga-cli", TASK, t, out))
-print(f"  lga-cli:     {fmt(t)}  result={out}")
+results.append(Result("lograph-cli", TASK, t, out))
+print(f"  lograph-cli:     {fmt(t)}  result={out}")
 
 # log-analyzer stream count
 t, out = run_python(lambda: repo.count_matches(PATTERN))
-results.append(Result("lga-cli(stream)", TASK, t, out))
-print(f"  lga-cli(st): {fmt(t)}  result={out}")
+results.append(Result("lograph-cli(stream)", TASK, t, out))
+print(f"  lograph-cli(st): {fmt(t)}  result={out}")
 
 separator()
 
@@ -194,8 +194,8 @@ with tempfile.TemporaryDirectory() as tmpdir:
     print(f"  python:           {fmt(t)}")
 
     t, out = run_python(lambda: repo.stream_filter_to_file(PATTERN, True, out_la))
-    results.append(Result("lga-cli", TASK2, t, out))
-    print(f"  lga-cli:     {fmt(t)}  lines={out}")
+    results.append(Result("lograph-cli", TASK2, t, out))
+    print(f"  lograph-cli:     {fmt(t)}  lines={out}")
 
 separator()
 
@@ -242,8 +242,8 @@ with tempfile.TemporaryDirectory() as tmpdir:
     t, out = run_python(
         lambda: repo.stream_replace_to_file(REPLACE_PAT, REPLACE_REP, out_la)
     )
-    results.append(Result("lga-cli", TASK3, t, out))
-    print(f"  lga-cli:     {fmt(t)}  modified={out}")
+    results.append(Result("lograph-cli", TASK3, t, out))
+    print(f"  lograph-cli:     {fmt(t)}  modified={out}")
 
 separator()
 
@@ -295,8 +295,8 @@ results.append(Result("python", TASK4, t))
 print(f"  python Counter:   {fmt(t)}")
 
 t, out = run_python(lambda: repo.collect_group_count(GROUP_PAT, 1))
-results.append(Result("lga-cli", TASK4, t))
-print(f"  lga-cli:     {fmt(t)}")
+results.append(Result("lograph-cli", TASK4, t))
+print(f"  lograph-cli:     {fmt(t)}")
 
 separator()
 
@@ -311,7 +311,7 @@ print()
 
 tasks = sorted(set(r.task for r in results), key=lambda t: [r.task for r in results].index(t))
 tools_order = ["grep", "grep|wc", "ripgrep", "awk", "sed", "rg|sort|uniq", "python",
-               "lga-cli", "lga-cli(stream)"]
+               "lograph-cli", "lograph-cli(stream)"]
 
 for task in tasks:
     print(f"  {task}")
@@ -330,7 +330,7 @@ for task in tasks:
 
 print("========== USABILITY COMPARISON ==========\n")
 print("""\
-| Feature                  | grep/rg/sed/awk        | lga-cli            |
+| Feature                  | grep/rg/sed/awk        | lograph-cli            |
 |--------------------------|------------------------|-------------------------|
 | Count matches            | grep -c / rg -c        | collect_count(pattern)  |
 | Filter to file           | grep pattern > out      | stream_filter_to_file() |

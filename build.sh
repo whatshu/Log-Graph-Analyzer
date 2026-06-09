@@ -146,7 +146,7 @@ install_user_config() {
     info "Creating user config with preset filters..."
     mkdir -p "$config_dir"
     cat > "$config_file" <<'CONFEOF'
-# log-analyzer user configuration
+# Log Graph Analyzer user configuration
 # ~/.log_analyzer/config.toml — user-level presets and settings
 
 [filters]
@@ -182,7 +182,7 @@ do_install() {
     if [[ "$MODE" == "dev" ]]; then
         info "Installing in editable/development mode..."
         pip install -e ".[dev]"
-        ok "Installed (editable).  CLI: lga-cli --help"
+        ok "Installed (editable).  CLI: lograph-cli --help"
     else
         do_build
         info "Installing $WHEEL ..."
@@ -265,7 +265,7 @@ do_pkg() {
     # Step 2: create a staging directory with a self-contained venv
     local staging
     staging=$(mktemp -d)
-    local venv_dir="$staging/opt/lga"
+    local venv_dir="$staging/opt/lograph"
 
     info "Creating self-contained virtualenv..."
     python3 -m venv "$venv_dir"
@@ -274,28 +274,28 @@ do_pkg() {
 
     # Step 3: create CLI wrapper that uses the bundled venv
     mkdir -p "$staging/usr/bin"
-    cat > "$staging/usr/bin/lga-cli" <<'WRAPPER'
+    cat > "$staging/usr/bin/lograph-cli" <<'WRAPPER'
 #!/bin/sh
-exec /opt/lga/bin/python -m lga.cli "$@"
+exec /opt/lograph/bin/python -m lograph.cli "$@"
 WRAPPER
-    chmod +x "$staging/usr/bin/lga-cli"
+    chmod +x "$staging/usr/bin/lograph-cli"
 
     # Step 3b: include TUI binary if it was built
-    local lga_bin="$ROOT_DIR/target/release/lga"
-    if [[ -x "$lga_bin" ]]; then
-        info "Including TUI binary (lga) in package..."
-        cp "$lga_bin" "$staging/usr/bin/lga"
+    local lograph_bin="$ROOT_DIR/target/release/lograph"
+    if [[ -x "$lograph_bin" ]]; then
+        info "Including TUI binary (lograph) in package..."
+        cp "$lograph_bin" "$staging/usr/bin/lograph"
     else
-        info "TUI binary not found (build with: cargo build --bin lga --no-default-features --release) — skipping."
+        info "TUI binary not found (build with: cargo build --bin lograph --no-default-features --release) — skipping."
     fi
 
     # Step 3c: create postinstall script for system-level config preset
     cat > "$staging/postinstall.sh" <<'POSTINST'
 #!/bin/sh
 # Create system-level config with preset filters if not present
-SYS_CONF="/etc/log-analyzer/config.toml"
+SYS_CONF="/etc/log-graph-analyzer/config.toml"
 if [ ! -f "$SYS_CONF" ]; then
-    mkdir -p /etc/log-analyzer
+    mkdir -p /etc/log-graph-analyzer
     cat > "$SYS_CONF" <<'CONFEOF'
 [filters]
 timestamp = '\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}'
@@ -450,7 +450,7 @@ do_ci() {
 
     # ---- Build native TUI binary (before do_pkg so it can be included) ----
     info "Building native TUI binary..."
-    cargo build --bin lga --no-default-features --release
+    cargo build --bin lograph --no-default-features --release
     ok "TUI binary built"
 
     # ---- System packages (deb + rpm) ----
@@ -468,7 +468,7 @@ do_ci() {
     mkdir -p "${BUILD_DIR}/tui" "${BUILD_DIR}/lib" "${BUILD_DIR}/pkg"
 
     # TUI binary — add platform suffix to avoid cross-platform name collisions
-    cp target/release/lga "${BUILD_DIR}/tui/lga-${PLATFORM}" 2>/dev/null || true
+    cp target/release/lograph "${BUILD_DIR}/tui/lograph-${PLATFORM}" 2>/dev/null || true
 
     # lib artifacts (wheels) — platform is already encoded in wheel filenames
     shopt -s nullglob
@@ -503,8 +503,8 @@ case "${COMMAND:-}" in
         do_install
         ;;
     uninstall)
-        info "Uninstalling log-analyzer..."
-        pip uninstall -y lga 2>/dev/null && ok "Uninstalled." || ok "Not installed."
+        info "Uninstalling log-graph-analyzer..."
+        pip uninstall -y lograph 2>/dev/null && ok "Uninstalled." || ok "Not installed."
         ;;
     test)
         do_install

@@ -476,31 +476,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 
 [[package]]
-name = "lga_core"
-version = "0.0.1"
-dependencies = [
- "chrono",
- "crossbeam-channel",
- "crossterm",
- "grep-matcher",
- "grep-regex",
- "grep-searcher",
- "memmap2",
- "parking_lot",
- "pyo3",
- "ratatui",
- "rayon",
- "regex",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "toml",
- "uuid",
- "zstd",
-]
-
-[[package]]
 name = "libc"
 version = "0.2.185"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -532,6 +507,31 @@ name = "log"
 version = "0.4.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
+
+[[package]]
+name = "lograph"
+version = "0.0.1"
+dependencies = [
+ "chrono",
+ "crossbeam-channel",
+ "crossterm",
+ "grep-matcher",
+ "grep-regex",
+ "grep-searcher",
+ "memmap2",
+ "parking_lot",
+ "pyo3",
+ "ratatui",
+ "rayon",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "toml",
+ "uuid",
+ "zstd",
+]
 
 [[package]]
 name = "lru"

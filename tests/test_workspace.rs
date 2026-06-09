@@ -1,8 +1,8 @@
 use std::fs;
 use tempfile::TempDir;
 
-use lga_core::operator::Operation;
-use lga_core::repo::{LogRepo, Workspace};
+use lograph::operator::Operation;
+use lograph::repo::{LogRepo, Workspace};
 
 #[test]
 fn test_workspace_import_and_list() {

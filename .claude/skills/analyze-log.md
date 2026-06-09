@@ -1,82 +1,84 @@
 ---
-description: Analyze a log file using the log-analyzer tool. Import logs, filter by regex, replace patterns, search for errors, and manage operation history with undo support.
+description: Analyze a log file using Log Graph Analyzer. Import logs, filter by regex, replace patterns, search for errors, and manage operation history with undo support.
 ---
 
 # Analyze Log File
 
-Use the `lga-cli` CLI tool to analyze log files. The tool stores logs in compressed repositories with full undo support.
+Use the `lograph-cli` CLI tool to analyze log files. The tool stores logs in compressed repositories with full undo support.
 
 ## Available Commands
 
 ```bash
 # Import a log file into a repository
-lga-cli import <file> [--repo <path>]
+lograph-cli import <file> [--repo <path>]
 
 # View repository info
-lga-cli info [--repo <path>]
+lograph-cli info [--repo <path>]
 
 # View lines from current state
-lga-cli view [--start N] [--count N] [--repo <path>]
+lograph-cli view [--start N] [--count N] [--repo <path>]
 
 # Search for lines matching a regex (read-only)
-lga-cli search <pattern> [--count N] [--repo <path>]
+lograph-cli search <pattern> [--count N] [--repo <path>]
 
 # Filter lines by regex (keeps or removes matching lines)
-lga-cli filter <pattern> [--keep/--remove] [--repo <path>]
+lograph-cli filter <pattern> [--keep/--remove] [--repo <path>]
 
 # Replace text using regex
-lga-cli replace <pattern> <replacement> [--repo <path>]
+lograph-cli replace <pattern> <replacement> [--repo <path>]
 
 # CRUD operations on individual lines
-lga-cli delete <line_indices...> [--repo <path>]
-lga-cli insert <after_line> <content...> [--repo <path>]
-log-analyzer modify <line_index> <new_content> [--repo <path>]
+lograph-cli delete <line_indices...> [--repo <path>]
+lograph-cli insert <after_line> <content...> [--repo <path>]
+lograph-cli modify <line_index> <new_content> [--repo <path>]
 
 # Undo last operation
-lga-cli undo [--repo <path>]
+lograph-cli undo [--repo <path>]
 
 # Show operation history
-lga-cli history [--repo <path>]
+lograph-cli history [--repo <path>]
 
 # Export filtered/modified log to file
-lga-cli export <dest> [--repo <path>]
+lograph-cli export <dest> [--repo <path>]
 
 # Clone a repository for parallel analysis
-lga-cli clone <dest> [--repo <path>]
+lograph-cli repo clone <src> <dst> [--workspace <path>]
 ```
 
 ## Common Workflows
 
 ### Error Investigation
 ```bash
-lga-cli import app.log
-lga-cli filter "ERROR" --keep
-lga-cli filter "database" --keep
-lga-cli view --count 50
+lograph-cli import app.log
+lograph-cli filter "ERROR" --keep
+lograph-cli filter "database" --keep
+lograph-cli view --count 50
 ```
 
 ### IP Anonymization
 ```bash
-lga-cli import access.log
-lga-cli replace '\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}' 'X.X.X.X'
-lga-cli export anonymized.log
+lograph-cli import access.log
+lograph-cli replace '\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}' 'X.X.X.X'
+lograph-cli export anonymized.log
 ```
 
 ### Branching Analysis
 ```bash
-lga-cli import server.log --repo main
-lga-cli clone error_analysis --repo main
-lga-cli clone perf_analysis --repo main
-lga-cli filter "ERROR" --keep --repo error_analysis
-lga-cli filter "slow|timeout" --keep --repo perf_analysis
+lograph-cli import server.log --repo main
+lograph-cli repo clone main error_analysis
+lograph-cli repo clone main perf_analysis
+lograph-cli filter "ERROR" --keep --repo error_analysis
+lograph-cli filter "slow|timeout" --keep --repo perf_analysis
 ```
 
 ## Python API
 
 ```python
-from lga import LogRepo
+from lograph import Workspace
 
-repo = LogRepo.import_file("./repo", "server.log")
+ws = Workspace(".logrepo")
+ws.import_file("server.log", "my_repo")
+repo = ws.open_repo("my_repo")
 repo.filter(r"\[ERROR\]", keep=True)
 lines = repo.read_all_lines()
 repo.undo()

@@ -5,10 +5,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::cache::CacheConfig;
 
-/// User configuration for lga.
+/// User configuration for lograph.
 ///
 /// Loaded from three tiers (each overrides the previous):
-/// 1. System:  `/etc/log-analyzer/config.toml`
+/// 1. System:  `/etc/log-graph-analyzer/config.toml`
 /// 2. User:    `~/.log_analyzer/config.toml`
 /// 3. Local:   `./.log_analyzer/config.toml`
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,7 +139,7 @@ impl Config {
         let mut config = Config::default();
 
         // Tier 1: system
-        if let Some(sys) = Self::load_file(&PathBuf::from("/etc/log-analyzer/config.toml")) {
+        if let Some(sys) = Self::load_file(&PathBuf::from("/etc/log-graph-analyzer/config.toml")) {
             config.merge(sys);
         }
 

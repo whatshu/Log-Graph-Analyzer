@@ -5,7 +5,7 @@ import tempfile
 
 import pytest
 
-from lga import Workspace, LogRepo
+from lograph import Workspace, LogRepo
 
 
 @pytest.fixture

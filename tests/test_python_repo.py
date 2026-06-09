@@ -1,11 +1,11 @@
-"""Tests for the lga Python API."""
+"""Tests for the lograph Python API."""
 
 import os
 import tempfile
 
 import pytest
 
-from lga import LogRepo
+from lograph import LogRepo
 
 
 @pytest.fixture

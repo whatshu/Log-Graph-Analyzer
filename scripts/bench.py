@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-bench.py — Benchmark lga against grep / ripgrep / awk on a >10 GB file.
+bench.py — Benchmark lograph against grep / ripgrep / awk on a >10 GB file.
 
 Usage
 -----
@@ -28,9 +28,9 @@ from statistics import median
 # ---------------------------------------------------------------------------
 ROOT_DIR  = Path(__file__).resolve().parent.parent
 DOCS_DIR  = ROOT_DIR / "docs"
-TEST_FILE = Path("/tmp/log_analyzer_bench.log")
-REPO_DIR  = Path("/tmp/log_analyzer_bench_repo")
-OUT_FILE  = Path("/tmp/log_analyzer_bench_out.log")
+TEST_FILE = Path("/tmp/lograph_bench.log")
+REPO_DIR  = Path("/tmp/lograph_bench_repo")
+OUT_FILE  = Path("/tmp/lograph_bench_out.log")
 
 PATTERN   = "ERROR"
 RUNS      = 3
@@ -202,7 +202,7 @@ def mem_total_gb() -> float:
 
 def run_benchmarks(file_path: Path, file_gb: float) -> list[dict]:
     """Run all benchmarks and return result rows."""
-    from lga._core import LogRepo
+    from lograph._core import LogRepo
     import tempfile
 
     results: list[dict] = []
@@ -253,10 +253,10 @@ def run_benchmarks(file_path: Path, file_gb: float) -> list[dict]:
     print(f"  awk          : {t:.2f}s  ({awk_count:,} matches)")
     results.append(row("awk", f"count '{PATTERN}'", t))
 
-    # lga static (raw file, uses ripgrep SIMD)
+    # lograph static (raw file, uses ripgrep SIMD)
     t, la_count = time_fn(lambda: LogRepo.count_file_matches(str(file_path), PATTERN))
     print(f"  la (raw)     : {t:.2f}s  ({la_count:,} matches)")
-    results.append(row("lga-cli", f"count '{PATTERN}' (raw file)", t, "ripgrep SIMD, no import"))
+    results.append(row("lograph-cli", f"count '{PATTERN}' (raw file)", t, "ripgrep SIMD, no import"))
 
     # -- 3. Import (one-time) ------------------------------------------------
     print("\n[3/5] Import & compress (one-time, not repeated)")
@@ -277,7 +277,7 @@ def run_benchmarks(file_path: Path, file_gb: float) -> list[dict]:
         f"  Ratio: {ratio:.1f}x"
     )
     results.append(row(
-        "lga-cli", "import + compress",
+        "lograph-cli", "import + compress",
         import_time,
         f"raw→compressed {ratio:.1f}x, repo {repo_size_bytes/(1<<30):.2f} GiB",
     ))
@@ -287,7 +287,7 @@ def run_benchmarks(file_path: Path, file_gb: float) -> list[dict]:
     t, la_comp_count = time_fn(lambda: repo_obj.count_matches(PATTERN))
     print(f"  la (compressed): {t:.2f}s  ({la_comp_count:,} matches)")
     results.append(row(
-        "lga-cli", f"count '{PATTERN}' (compressed)",
+        "lograph-cli", f"count '{PATTERN}' (compressed)",
         t, f"reads {repo_size_bytes/(1<<30):.2f} GiB compressed",
     ))
 
@@ -313,7 +313,7 @@ def run_benchmarks(file_path: Path, file_gb: float) -> list[dict]:
     )
     print(f"  la   → file  : {t:.2f}s  ({la_filter_n:,} lines written, reads compressed)")
     results.append(row(
-        "lga-cli", f"filter '{PATTERN}' → file (compressed)",
+        "lograph-cli", f"filter '{PATTERN}' → file (compressed)",
         t, "streaming, reads compressed chunks",
     ))
 
@@ -401,7 +401,7 @@ def render_markdown(
 
     lines += [
         "",
-        "### Import & compression (lga, one-time cost)",
+        "### Import & compression (lograph, one-time cost)",
         "",
         "| Metric | Value |",
         "|--------|-------|",
@@ -427,14 +427,14 @@ def render_markdown(
         "",
         "- **grep / ripgrep / awk** operate on the raw file every time.",
         (
-            f"- **lga** pays a one-time import cost ({stats['import_time']:.1f} s) "
+            f"- **lograph** pays a one-time import cost ({stats['import_time']:.1f} s) "
             f"that compresses the data {ratio:.1f}× ({raw_gb:.1f} → {repo_gb:.1f} GiB)."
         ),
         (
             "- Post-import searches on compressed data read less I/O, making "
             "repeated operations faster on I/O-bound systems."
         ),
-        "- `log-analyzer` raw-file search (`count_file_matches`) uses ripgrep's",
+        "- `lograph` raw-file search (`count_file_matches`) uses ripgrep's",
         "  SIMD searcher and is comparable in speed to `rg`.",
         "- Additional benefits: reversible operations (filter/replace with undo),",
         "  operation history, workspace management, and Python API.",
@@ -459,7 +459,7 @@ def main() -> None:
     file_gb   = args.gb
 
     print("=" * 60)
-    print("log-analyzer performance benchmark")
+    print("lograph performance benchmark")
     print("=" * 60)
 
     # ---- Generate or verify test file ----
