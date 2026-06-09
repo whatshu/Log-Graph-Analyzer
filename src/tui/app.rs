@@ -37,6 +37,7 @@ pub enum InputMode {
     TagRename,
 }
 
+#[derive(Debug)]
 pub enum PendingOp {
     None,
     OpenRepo(String),
@@ -150,6 +151,7 @@ pub struct HistoryNode {
     /// Tree connector prefix: "│  ", "├─ ", "└─ ", "   "
     pub connector: String,
     /// Depth in the tree (for indentation).
+    #[allow(dead_code)]
     pub depth: usize,
     /// Branch labels at this node.
     pub branch_labels: Vec<String>,
@@ -162,6 +164,7 @@ pub struct HistoryNode {
     /// Whether this node is soft-deleted.
     pub deleted: bool,
     /// Tag scope name if this node was created with a tag scope.
+    #[allow(dead_code)]
     pub tag_name: Option<String>,
 }
 
@@ -514,6 +517,7 @@ impl App {
         }
     }
 
+    #[allow(dead_code)]
     pub fn queue_operation_from(&mut self, node_id: usize, op: Operation) {
         self.pending_op = PendingOp::ApplyOperationFrom(node_id, op);
     }
@@ -566,7 +570,7 @@ impl App {
         self.detached_head = false;
         self.status_message = String::from("Returned to HEAD");
         self.load_viewport();
-        self.re_search();
+        self.clear_search();
     }
 
     pub fn queue_export_from(&mut self, node_idx: usize, path: String) {
@@ -597,7 +601,7 @@ impl App {
                 drop(repo_mut);
                 self.refresh_line_count();
                 self.load_viewport();
-                self.re_search();
+                self.clear_search();
             }
             PendingOp::Undo => {
                 let mut repo_mut = self.repo.borrow_mut();
@@ -619,7 +623,7 @@ impl App {
                 drop(repo_mut);
                 self.refresh_line_count();
                 self.load_viewport();
-                self.re_search();
+                self.clear_search();
             }
             PendingOp::CheckoutTo(node_idx) => {
                 let node_id = node_idx;
@@ -648,7 +652,7 @@ impl App {
                     }
                 }
                 self.load_viewport();
-                self.re_search();
+                self.clear_search();
                 self.build_history();
             }
             PendingOp::ExportFrom(node_idx, path) => {
@@ -719,7 +723,7 @@ impl App {
                 drop(repo_mut);
                 self.refresh_line_count();
                 self.load_viewport();
-                self.re_search();
+                self.clear_search();
             }
             PendingOp::MergeNodes { sources, branch } => {
                 let mut repo_mut = self.repo.borrow_mut();
@@ -744,7 +748,7 @@ impl App {
                 drop(repo_mut);
                 self.refresh_line_count();
                 self.load_viewport();
-                self.re_search();
+                self.clear_search();
             }
             PendingOp::SubtractNodes { base, subtrahend, branch } => {
                 let mut repo_mut = self.repo.borrow_mut();
@@ -769,7 +773,7 @@ impl App {
                 drop(repo_mut);
                 self.refresh_line_count();
                 self.load_viewport();
-                self.re_search();
+                self.clear_search();
             }
             PendingOp::ReplayNode { source, target_parent, branch } => {
                 let mut repo_mut = self.repo.borrow_mut();
@@ -793,7 +797,7 @@ impl App {
                 drop(repo_mut);
                 self.refresh_line_count();
                 self.load_viewport();
-                self.re_search();
+                self.clear_search();
             }
             PendingOp::SoftDelete { node_id } => {
                 let mut repo_mut = self.repo.borrow_mut();
@@ -814,7 +818,7 @@ impl App {
                 drop(repo_mut);
                 self.refresh_line_count();
                 self.load_viewport();
-                self.re_search();
+                self.clear_search();
             }
         }
     }
@@ -899,76 +903,12 @@ impl App {
         }
     }
 
-    /// Re-run the current search pattern against the current line space.
-    /// Used after data-mutating operations (filter/replace/undo/checkout) to
-    /// keep search highlights and n/N navigation accurate.
-    /// Does NOT reload the viewport (caller must do that first).
-    pub fn re_search(&mut self) {
-        if self.search_query.is_empty() {
-            return;
-        }
-
-        let query = self.search_query.clone();
-        let results: Vec<usize> = {
-            // If viewing a specific node, get its state
-            if let Some(node_id) = self.viewed_node_id {
-                let repo_ref = self.repo.borrow();
-                if let Some(ref r) = *repo_ref {
-                    let lines = r.view_node(node_id).unwrap_or_default();
-                    match regex::Regex::new(&query) {
-                        Ok(re) => lines
-                            .iter()
-                            .enumerate()
-                            .filter(|(_, line)| re.is_match(line))
-                            .take(10_000)
-                            .map(|(i, _)| i)
-                            .collect(),
-                        Err(_) => Vec::new(),
-                    }
-                } else {
-                    Vec::new()
-                }
-            } else {
-                let repo_ref = self.repo.borrow();
-                if repo_ref.is_none() {
-                    return;
-                }
-
-                let has_ops =
-                    repo_ref
-                        .as_ref()
-                        .map_or(false, |r: &LogRepo| !r.history_tree().is_empty());
-                if has_ops {
-                    drop(repo_ref);
-                    let mut repo_mut = self.repo.borrow_mut();
-                    if let Some(ref mut r) = *repo_mut {
-                        let lines = r.get_current_lines().unwrap_or_default();
-                        match regex::Regex::new(&query) {
-                            Ok(re) => lines
-                                .iter()
-                                .enumerate()
-                                .filter(|(_, line)| re.is_match(line))
-                                .take(10_000)
-                                .map(|(i, _)| i)
-                                .collect(),
-                            Err(_) => Vec::new(),
-                        }
-                    } else {
-                        Vec::new()
-                    }
-                } else {
-                    let r = repo_ref.as_ref().unwrap();
-                    let proc = r.processor();
-                    proc.parallel_search(&query, 10_000)
-                        .unwrap_or_default()
-                        .iter()
-                        .map(|(idx, _)| *idx)
-                        .collect()
-                }
-            }
-        };
-
-        self.search_results = results;
+    /// Clear the current search state (query, results, and index).
+    /// Called after operations that change the data so highlights don't
+    /// persist onto the new dataset.
+    pub fn clear_search(&mut self) {
+        self.search_query.clear();
+        self.search_results.clear();
         self.search_index = 0;
     }
 
@@ -1980,5 +1920,175 @@ mod tests {
         let new_head = app.repo.borrow().as_ref().unwrap().head_node_id();
         assert!(app.collect_results.contains_key(&new_head));
         assert_eq!(app.collect_results.get(&new_head).unwrap(), "Count: 50");
+    }
+
+    // ── clear_search ──
+
+    #[test]
+    fn test_clear_search_empties_state() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        // Set up search state
+        app.search_query = "ERROR".to_string();
+        app.search_results = vec![2, 6, 10];
+        app.search_index = 1;
+
+        app.clear_search();
+
+        assert!(app.search_query.is_empty());
+        assert!(app.search_results.is_empty());
+        assert_eq!(app.search_index, 0);
+    }
+
+    #[test]
+    fn test_filter_keep_clears_search() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        // Simulate user: search then filter
+        app.do_search("ERROR");
+        assert!(!app.search_results.is_empty());
+        assert_eq!(app.search_query, "ERROR");
+
+        app.queue_operation(Operation::Filter {
+            pattern: "ERROR".to_string(),
+            keep: true,
+        });
+        app.apply_pending();
+
+        // Search should be cleared after filter
+        assert!(app.search_query.is_empty());
+        assert!(app.search_results.is_empty());
+        assert_eq!(app.search_index, 0);
+    }
+
+    #[test]
+    fn test_filter_remove_clears_search() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        app.do_search("ERROR");
+        assert!(!app.search_results.is_empty());
+
+        app.queue_operation(Operation::Filter {
+            pattern: "ERROR".to_string(),
+            keep: false,
+        });
+        app.apply_pending();
+
+        assert!(app.search_query.is_empty());
+        assert!(app.search_results.is_empty());
+    }
+
+    #[test]
+    fn test_replace_clears_search() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        app.do_search("ERROR");
+        assert!(!app.search_results.is_empty());
+
+        app.queue_operation(Operation::Replace {
+            pattern: "ERROR".to_string(),
+            replacement: "OK".to_string(),
+        });
+        app.apply_pending();
+
+        assert!(app.search_query.is_empty());
+        assert!(app.search_results.is_empty());
+    }
+
+    #[test]
+    fn test_undo_clears_search() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        // Apply a filter first
+        app.queue_operation(Operation::Filter {
+            pattern: "ERROR".to_string(),
+            keep: true,
+        });
+        app.apply_pending();
+
+        // Search in the filtered state
+        app.do_search("message");
+        assert!(!app.search_results.is_empty());
+
+        // Undo should clear search
+        app.queue_undo();
+        app.apply_pending();
+
+        assert!(app.search_query.is_empty());
+        assert!(app.search_results.is_empty());
+    }
+
+    // ── Checkout uses node ID (not cursor index) ──
+
+    #[test]
+    fn test_queue_checkout_stores_node_id() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        // Create a history where cursor index != node ID is possible.
+        // Apply operations to create multiple nodes.
+        app.queue_operation(Operation::Filter {
+            pattern: "ERROR".to_string(),
+            keep: true,
+        });
+        app.apply_pending();
+        app.queue_operation(Operation::Filter {
+            pattern: "message 0".to_string(),
+            keep: true,
+        });
+        app.apply_pending();
+        app.build_history();
+
+        // history_nodes should have 3 entries: node 0 (import),
+        // node 1 (filter ERROR), node 2 (filter message 0).
+        // Cursor position of HEAD should be at index 2 (node_id=2).
+        // But let's test with the first non-root node explicitly.
+        let node1 = app.history_nodes.iter().find(|n| n.id == 1).unwrap();
+        let node1_index = app.history_nodes.iter().position(|n| n.id == 1).unwrap();
+
+        // Directly queue checkout with the actual node ID (simulating
+        // what the fixed Enter handler does).
+        let actual_node_id = app.history_nodes[node1_index].id;
+        app.queue_checkout(actual_node_id);
+
+        match &app.pending_op {
+            PendingOp::CheckoutTo(id) => assert_eq!(*id, actual_node_id),
+            other => panic!("Expected CheckoutTo, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_apply_operation_from_clears_search() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        // First filter to create a non-root node
+        app.queue_operation(Operation::Filter {
+            pattern: "ERROR".to_string(),
+            keep: true,
+        });
+        app.apply_pending();
+
+        // Search
+        app.do_search("message");
+        assert!(!app.search_results.is_empty());
+
+        // View node 0, then apply operation from it (branch off)
+        app.viewed_node_id = Some(0);
+        app.detached_head = true;
+        app.queue_operation(Operation::Filter {
+            pattern: "DEBUG".to_string(),
+            keep: true,
+        });
+        app.apply_pending();
+
+        // Search should be cleared
+        assert!(app.search_query.is_empty());
+        assert!(app.search_results.is_empty());
     }
 }

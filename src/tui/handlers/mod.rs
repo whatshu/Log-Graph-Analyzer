@@ -196,7 +196,7 @@ pub fn normal_mode(app: &mut App, key: KeyEvent) {
                 app.error_message = Some("No line to modify".to_string());
             } else {
                 let line_idx = app.cursor_line;
-                let current = app.repo.borrow().as_ref().and_then(|r| {
+                let current = app.repo.borrow().as_ref().and_then(|_r| {
                     let lines = app.viewport_lines.clone();
                     let viewport_offset = line_idx.saturating_sub(app.scroll_offset);
                     lines.get(viewport_offset).cloned()
@@ -228,7 +228,8 @@ pub fn normal_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Enter => {
             if app.active_view == ViewKind::History {
                 if app.history_cursor < app.history_nodes.len() {
-                    app.queue_checkout(app.history_cursor);
+                    let node_id = app.history_nodes[app.history_cursor].id;
+                    app.queue_checkout(node_id);
                 }
             } else if app.active_view == ViewKind::RepoList {
                 if let Ok(repos) = app.workspace.list() {
@@ -563,7 +564,7 @@ fn execute_command(app: &mut App, cmd: &str) {
                     format!("Appended {} lines from {}", added, path);
                 app.refresh_line_count();
                 app.load_viewport();
-                app.re_search();
+                app.clear_search();
             }
             Err(e) => {
                 app.error_message = Some(format!("Append failed: {}", e));
@@ -692,7 +693,7 @@ fn execute_command(app: &mut App, cmd: &str) {
                 app.status_message = format!("Switched to branch '{}'", name);
                 app.refresh_line_count();
                 app.load_viewport();
-                app.re_search();
+                app.clear_search();
             }
             Some(err) => {
                 app.error_message = Some(format!("Checkout failed: {}", err));
@@ -953,7 +954,7 @@ fn handle_input(app: &mut App, prompt: &str, input: &str) {
                     format!("Appended {} lines from {}", added, input);
                 app.refresh_line_count();
                 app.load_viewport();
-                app.re_search();
+                app.clear_search();
             }
             Err(e) => {
                 app.error_message = Some(format!("Append failed: {}", e));
@@ -1015,7 +1016,7 @@ pub fn visual_select_mode(app: &mut App, key: KeyEvent) {
             let start = app.visual_select_start.unwrap_or(app.cursor_line);
             let end = app.cursor_line;
             let (s, e) = if start <= end { (start, end) } else { (end, start) };
-            let ranges = vec![(s, e)];
+            let _ranges = vec![(s, e)];
             let default_name = app.tag_store.next_auto_name(&app.repo_name);
             app.input_mode = InputMode::TagRename;
             app.input_buffer = default_name;
@@ -1344,5 +1345,145 @@ mod tests {
         execute_command(&mut app, "linestats");
         assert!(app.show_collect_detail);
         assert!(app.collect_detail.as_ref().unwrap().contains("Line Statistics"));
+    }
+
+    // ── History view Enter resolves node ID from cursor index ──
+
+    #[test]
+    fn test_history_enter_uses_resolved_node_id() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        // Create multiple nodes.
+        app.queue_operation(Operation::Filter {
+            pattern: "ERROR".to_string(),
+            keep: true,
+        });
+        app.apply_pending();
+        app.queue_operation(Operation::Filter {
+            pattern: "message 0".to_string(),
+            keep: true,
+        });
+        app.apply_pending();
+
+        app.build_history();
+        app.active_view = ViewKind::History;
+
+        // history_nodes = [node0(import), node1(filter ERROR), node2(filter message0)]
+        // HEAD is node2 at cursor index 2. Move cursor to a specific position.
+        app.history_cursor = 1;
+        // The key fix: cursor is an array INDEX, not a node ID.
+        // Resolve to actual node ID from history_nodes.
+        let expected_node_id = app.history_nodes[app.history_cursor].id;
+
+        // Simulate pressing Enter in history view
+        normal_mode(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+
+        // The pending op must contain the resolved node ID from history_nodes,
+        // NOT the raw cursor index.
+        match &app.pending_op {
+            crate::tui::app::PendingOp::CheckoutTo(id) => {
+                assert_eq!(*id, expected_node_id,
+                    "CheckoutTo must store the resolved node ID from history_nodes[cursor].id");
+            }
+            other => panic!("Expected CheckoutTo after Enter in history view, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_history_enter_uses_resolved_node_id_not_raw_cursor() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        // Create nodes using apply_operation_from to create branches,
+        // which makes cursor index != node ID more explicit.
+        // Start with one linear operation.
+        app.queue_operation(Operation::Filter {
+            pattern: "ERROR".to_string(),
+            keep: true,
+        });
+        app.apply_pending();
+
+        // Now apply from node 0 to create a branch (node ID won't match index).
+        app.queue_operation_from(0, Operation::Filter {
+            pattern: "DEBUG".to_string(),
+            keep: true,
+        });
+        app.apply_pending();
+
+        // Apply another operation on the main branch.
+        app.queue_operation(Operation::Filter {
+            pattern: "INFO".to_string(),
+            keep: true,
+        });
+        app.apply_pending();
+
+        app.build_history();
+        app.active_view = ViewKind::History;
+
+        // Verify that we have nodes where ID doesn't equal index position
+        let has_divergent = app.history_nodes.iter().enumerate().any(|(idx, n)| idx != n.id);
+        assert!(has_divergent,
+            "Need at least one node whose index differs from its ID to prove the fix works");
+
+        // For every non-root node in the history, simulate pressing Enter
+        // and verify the CheckoutTo contains the correct node ID.
+        for cursor in 0..app.history_nodes.len() {
+            app.history_cursor = cursor;
+            let expected_id = app.history_nodes[cursor].id;
+
+            normal_mode(
+                &mut app,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            );
+
+            match &app.pending_op {
+                crate::tui::app::PendingOp::CheckoutTo(id) => {
+                    assert_eq!(*id, expected_id,
+                        "Enter on history_nodes[{}] (id={}) should checkout to id={}, got id={}",
+                        cursor, expected_id, expected_id, id);
+                }
+                other => panic!(
+                    "Enter on history_nodes[{}] expected CheckoutTo, got {:?}",
+                    cursor, other
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn test_history_enter_returns_to_head_when_head_selected() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        // Apply one operation to have a non-root HEAD
+        app.queue_operation(Operation::Filter {
+            pattern: "ERROR".to_string(),
+            keep: true,
+        });
+        app.apply_pending();
+
+        app.build_history();
+        app.active_view = ViewKind::History;
+
+        // Find cursor position of HEAD node
+        let head_id = app.repo.borrow().as_ref().unwrap().head_node_id();
+        let head_cursor = app.history_nodes.iter().position(|n| n.id == head_id).unwrap();
+        app.history_cursor = head_cursor;
+
+        normal_mode(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+
+        match &app.pending_op {
+            crate::tui::app::PendingOp::CheckoutTo(id) => {
+                assert_eq!(*id, head_id, "Enter on HEAD should checkout to HEAD node ID");
+            }
+            other => panic!("Expected CheckoutTo after Enter on HEAD, got {:?}", other),
+        }
     }
 }
