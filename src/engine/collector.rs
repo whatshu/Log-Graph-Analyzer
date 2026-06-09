@@ -68,6 +68,29 @@ pub enum Collector {
     LineStats,
 }
 
+impl Collector {
+    /// Get a human-readable description of this collector.
+    pub fn describe(&self) -> String {
+        match self {
+            Collector::Count { pattern: None } => "count all".to_string(),
+            Collector::Count { pattern: Some(p) } => format!("count /{}/", p),
+            Collector::GroupCount { pattern, group_index } => {
+                format!("group by /{}/ [{}]", pattern, group_index)
+            }
+            Collector::TopN { pattern, group_index, n } => {
+                format!("top-{} by /{}/ [{}]", n, pattern, group_index)
+            }
+            Collector::Unique { pattern, group_index } => {
+                format!("unique /{}/ [{}]", pattern, group_index)
+            }
+            Collector::NumericStats { pattern, group_index } => {
+                format!("numstats /{}/ [{}]", pattern, group_index)
+            }
+            Collector::LineStats => "line statistics".to_string(),
+        }
+    }
+}
+
 /// The result of a collect operation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CollectResult {
@@ -97,6 +120,104 @@ pub enum CollectResult {
         max_len: usize,
         min_len: usize,
     },
+}
+
+impl CollectResult {
+    /// Format the collect result as a vector of text lines suitable for
+    /// storage as log content in a history node.
+    pub fn to_lines(&self) -> Vec<String> {
+        let detail = self.to_detail_string();
+        detail.lines().map(|s| s.to_string()).collect()
+    }
+
+    /// Format the collect result as a multi-line detail string.
+    pub fn to_detail_string(&self) -> String {
+        match self {
+            CollectResult::Count(n) => {
+                format!("Count: {} lines", n)
+            }
+            CollectResult::GroupCount(pairs) => {
+                let mut s = format!("Group Count — {} groups\n\n", pairs.len());
+                s.push_str("  Count  │ Value\n");
+                s.push_str(" ────────┼──────────────────\n");
+                for (val, count) in pairs.iter().take(50) {
+                    let val_display = if val.len() > 40 {
+                        format!("{}…", &val[..39])
+                    } else {
+                        val.clone()
+                    };
+                    s.push_str(&format!("  {:>6} │ {}\n", count, val_display));
+                }
+                if pairs.len() > 50 {
+                    s.push_str(&format!("  … and {} more groups\n", pairs.len() - 50));
+                }
+                s
+            }
+            CollectResult::TopN(pairs) => {
+                let mut s = format!("Top-{} Values\n\n", pairs.len());
+                s.push_str("  Count  │ Value\n");
+                s.push_str(" ────────┼──────────────────\n");
+                for (val, count) in pairs.iter() {
+                    let val_display = if val.len() > 40 {
+                        format!("{}…", &val[..39])
+                    } else {
+                        val.clone()
+                    };
+                    s.push_str(&format!("  {:>6} │ {}\n", count, val_display));
+                }
+                s
+            }
+            CollectResult::Unique(vals) => {
+                let mut s = format!("Unique Values — {} distinct\n\n", vals.len());
+                for val in vals.iter().take(100) {
+                    s.push_str(&format!("  {}\n", val));
+                }
+                if vals.len() > 100 {
+                    s.push_str(&format!("  … and {} more\n", vals.len() - 100));
+                }
+                s
+            }
+            CollectResult::NumericStats { count, sum, min, max, avg } => {
+                format!(
+                    "Numeric Statistics\n\n  Count:  {}\n  Sum:    {:.4}\n  Min:    {:.4}\n  Max:    {:.4}\n  Avg:    {:.4}",
+                    count, sum, min, max, avg
+                )
+            }
+            CollectResult::LineStats { count, total_bytes, avg_len, max_len, min_len } => {
+                format!(
+                    "Line Statistics\n\n  Lines:       {}\n  Total Bytes: {}\n  Avg Length:  {:.1}\n  Max Length:  {}\n  Min Length:  {}",
+                    count, total_bytes, avg_len, max_len, min_len
+                )
+            }
+        }
+    }
+
+    /// Format a one-line summary of this collect result.
+    pub fn summary(&self) -> String {
+        match self {
+            CollectResult::Count(n) => format!("Count: {}", n),
+            CollectResult::GroupCount(pairs) => {
+                format!("GroupCount: {} groups, top=\"{}\"×{}",
+                    pairs.len(),
+                    pairs.first().map(|(k, _)| k.as_str()).unwrap_or("—"),
+                    pairs.first().map(|(_, v)| *v).unwrap_or(0))
+            }
+            CollectResult::TopN(pairs) => {
+                format!("Top{}: {}",
+                    pairs.len(),
+                    pairs.first().map(|(k, v)| format!("\"{}\"×{}", k, v)).unwrap_or_else(|| "—".to_string()))
+            }
+            CollectResult::Unique(vals) => {
+                format!("Unique: {} values", vals.len())
+            }
+            CollectResult::NumericStats { count, min, max, avg, .. } => {
+                format!("NumStats: n={} min={:.1} max={:.1} avg={:.1}", count, min, max, avg)
+            }
+            CollectResult::LineStats { count, avg_len, max_len, min_len, .. } => {
+                format!("LineStats: n={} avg={:.1} min={} max={}", count, avg_len, min_len, max_len)
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -10,6 +10,7 @@ use chrono::{DateTime, Utc};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::engine::Collector;
 use crate::error::Result;
 
 /// Represents a reversible operation on log lines.
@@ -55,6 +56,11 @@ pub enum Operation {
     Replay {
         source_node_id: usize,
     },
+    /// Collect: run a collector on current state and replace log content
+    /// with the formatted collect result as text lines.
+    Collect {
+        collector: Collector,
+    },
 }
 
 /// Stored inverse data for undoing an operation.
@@ -94,6 +100,10 @@ pub enum InverseData {
     ReplayInverse {
         inner: Box<InverseData>,
     },
+    /// For collect: the original lines before collection (for undo).
+    CollectInverse {
+        previous_lines: Vec<String>,
+    },
 }
 
 /// A recorded operation with its inverse for undo.
@@ -128,6 +138,10 @@ impl Operation {
                     "Merge/Subtract/Replay must be applied via LogRepo methods".into(),
                 ))
             }
+            Operation::Collect { collector } => {
+                let result = crate::engine::collector::execute_on_lines(collector, &lines)?;
+                Ok(result.to_lines())
+            }
         }
     }
 
@@ -156,6 +170,13 @@ impl Operation {
                 Err(crate::error::LogAnalyzerError::Operator(
                     "Merge/Subtract/Replay must be applied via LogRepo methods".into(),
                 ))
+            }
+            Operation::Collect { collector } => {
+                let previous_lines = lines.clone();
+                let result = crate::engine::collector::execute_on_lines(collector, &lines)?;
+                let new_lines = result.to_lines();
+                let inverse = InverseData::CollectInverse { previous_lines };
+                Ok((new_lines, inverse))
             }
         }
     }
@@ -204,6 +225,9 @@ impl Operation {
             }
             Operation::Replay { source_node_id } => {
                 format!("replay node {}", source_node_id)
+            }
+            Operation::Collect { collector } => {
+                format!("collect {}", collector.describe())
             }
         }
     }

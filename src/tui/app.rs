@@ -123,6 +123,8 @@ pub struct App {
 
     // Collect results stored by node_id
     pub collect_results: HashMap<usize, String>,
+    /// Pending collect summary — set by run_collect, consumed by apply_pending.
+    pub pending_collect_summary: Option<String>,
     pub collect_detail: Option<String>,
     pub show_collect_detail: bool,
 
@@ -240,6 +242,7 @@ impl App {
             ascii_only: !detect_utf8_locale(),
             pending_history_export: None,
             collect_results: HashMap::new(),
+            pending_collect_summary: None,
             collect_detail: None,
             show_collect_detail: false,
             history_marks: HashSet::new(),
@@ -584,6 +587,7 @@ impl App {
             PendingOp::OpenRepo(name) => self.do_open_repo(&name),
             PendingOp::ApplyOperation(op) => {
                 let desc = op.describe();
+                let is_collect = matches!(op, Operation::Collect { .. });
                 let scope = self.active_tag_scope.clone();
                 let mut repo_mut = self.repo.borrow_mut();
                 if let Some(ref mut r) = *repo_mut {
@@ -591,6 +595,14 @@ impl App {
                         Ok(()) => {
                             self.status_message = format!("Applied: {}", desc);
                             self.line_count_is_original = false;
+                            // If this was a collect operation, store the summary
+                            // associated with the new HEAD node.
+                            if is_collect {
+                                if let Some(summary) = self.pending_collect_summary.take() {
+                                    let new_head = r.head_node_id();
+                                    self.collect_results.insert(new_head, summary);
+                                }
+                            }
                         }
                         Err(e) => {
                             self.error_message =
@@ -689,6 +701,7 @@ impl App {
             }
             PendingOp::ApplyOperationFrom(from_node_id, op) => {
                 let desc = op.describe();
+                let is_collect = matches!(op, Operation::Collect { .. });
                 let mut repo_mut = self.repo.borrow_mut();
                 if let Some(ref mut r) = *repo_mut {
                     let branch_name = match &op {
@@ -702,6 +715,9 @@ impl App {
                         Operation::Replace { pattern, .. } => {
                             format!("replace-{}", pattern)
                         }
+                        Operation::Collect { collector } => {
+                            format!("collect-{}", collector.describe().replace(' ', "-"))
+                        }
                         _ => String::from("branch"),
                     };
                     match r.apply_operation_from(from_node_id, &branch_name, op) {
@@ -713,6 +729,13 @@ impl App {
                             self.line_count_is_original = false;
                             self.viewed_node_id = None;
                             self.detached_head = false;
+                            // If this was a collect operation, store the summary.
+                            if is_collect {
+                                if let Some(summary) = self.pending_collect_summary.take() {
+                                    let new_head = r.head_node_id();
+                                    self.collect_results.insert(new_head, summary);
+                                }
+                            }
                         }
                         Err(e) => {
                             self.error_message =
@@ -988,18 +1011,11 @@ impl App {
 
     // ── Collect operations ──
 
-    /// Run a collector against the current repo state and store the result.
-    /// The result summary is associated with the current HEAD node for display
-    /// in the history view, and the full detail is shown as a popup.
+    /// Run a collector against the current repo state and create a history node.
+    /// The collect result is formatted as text lines and stored as the node's
+    /// log content, and the full detail is shown as a popup.
     pub fn run_collect(&mut self, collector: Collector) {
-        let node_id = {
-            let repo_ref = self.repo.borrow();
-            repo_ref
-                .as_ref()
-                .map(|r| r.head_node_id())
-                .unwrap_or(0)
-        };
-
+        // Run the collector first to get the result for display.
         let result = {
             let mut repo_mut = self.repo.borrow_mut();
             repo_mut
@@ -1009,14 +1025,19 @@ impl App {
 
         match result {
             Some(ref r) => {
-                let summary = Self::collect_result_summary(r);
-                let detail = Self::collect_result_detail(r);
-                self.collect_results.insert(node_id, summary.clone());
+                let summary = r.summary();
+                let detail = r.to_detail_string();
                 self.collect_detail = Some(detail);
                 self.show_collect_detail = true;
                 self.status_message = format!("Collect: {}", summary);
-                // Refresh history view if we're on it
-                self.build_history();
+
+                // Store summary so apply_pending can associate it with the new node.
+                self.pending_collect_summary = Some(summary);
+
+                // Queue the collect as a history node operation.
+                // This replaces the current log lines with the formatted
+                // collect result, making it a permanent node in the DAG.
+                self.queue_operation(Operation::Collect { collector });
             }
             None => {
                 self.error_message = Some("Collect failed".to_string());
@@ -1026,91 +1047,12 @@ impl App {
 
     /// Format a one-line summary of a collect result.
     pub fn collect_result_summary(result: &CollectResult) -> String {
-        match result {
-            CollectResult::Count(n) => format!("Count: {}", n),
-            CollectResult::GroupCount(pairs) => {
-                format!("GroupCount: {} groups, top=\"{}\"×{}",
-                    pairs.len(),
-                    pairs.first().map(|(k, _)| k.as_str()).unwrap_or("—"),
-                    pairs.first().map(|(_, v)| *v).unwrap_or(0))
-            }
-            CollectResult::TopN(pairs) => {
-                format!("Top{}: {}",
-                    pairs.len(),
-                    pairs.first().map(|(k, v)| format!("\"{}\"×{}", k, v)).unwrap_or_else(|| "—".to_string()))
-            }
-            CollectResult::Unique(vals) => {
-                format!("Unique: {} values", vals.len())
-            }
-            CollectResult::NumericStats { count, min, max, avg, .. } => {
-                format!("NumStats: n={} min={:.1} max={:.1} avg={:.1}", count, min, max, avg)
-            }
-            CollectResult::LineStats { count, avg_len, max_len, min_len, .. } => {
-                format!("LineStats: n={} avg={:.1} min={} max={}", count, avg_len, min_len, max_len)
-            }
-        }
+        result.summary()
     }
 
     /// Format a multi-line detail display of a collect result.
     pub fn collect_result_detail(result: &CollectResult) -> String {
-        match result {
-            CollectResult::Count(n) => {
-                format!("Count: {} lines", n)
-            }
-            CollectResult::GroupCount(pairs) => {
-                let mut s = format!("Group Count — {} groups\n\n", pairs.len());
-                s.push_str("  Count  │ Value\n");
-                s.push_str(" ────────┼──────────────────\n");
-                for (val, count) in pairs.iter().take(50) {
-                    let val_display = if val.len() > 40 {
-                        format!("{}…", &val[..39])
-                    } else {
-                        val.clone()
-                    };
-                    s.push_str(&format!("  {:>6} │ {}\n", count, val_display));
-                }
-                if pairs.len() > 50 {
-                    s.push_str(&format!("  … and {} more groups\n", pairs.len() - 50));
-                }
-                s
-            }
-            CollectResult::TopN(pairs) => {
-                let mut s = format!("Top-{} Values\n\n", pairs.len());
-                s.push_str("  Count  │ Value\n");
-                s.push_str(" ────────┼──────────────────\n");
-                for (val, count) in pairs.iter() {
-                    let val_display = if val.len() > 40 {
-                        format!("{}…", &val[..39])
-                    } else {
-                        val.clone()
-                    };
-                    s.push_str(&format!("  {:>6} │ {}\n", count, val_display));
-                }
-                s
-            }
-            CollectResult::Unique(vals) => {
-                let mut s = format!("Unique Values — {} distinct\n\n", vals.len());
-                for val in vals.iter().take(100) {
-                    s.push_str(&format!("  {}\n", val));
-                }
-                if vals.len() > 100 {
-                    s.push_str(&format!("  … and {} more\n", vals.len() - 100));
-                }
-                s
-            }
-            CollectResult::NumericStats { count, sum, min, max, avg } => {
-                format!(
-                    "Numeric Statistics\n\n  Count:  {}\n  Sum:    {:.4}\n  Min:    {:.4}\n  Max:    {:.4}\n  Avg:    {:.4}",
-                    count, sum, min, max, avg
-                )
-            }
-            CollectResult::LineStats { count, total_bytes, avg_len, max_len, min_len } => {
-                format!(
-                    "Line Statistics\n\n  Lines:       {}\n  Total Bytes: {}\n  Avg Length:  {:.1}\n  Max Length:  {}\n  Min Length:  {}",
-                    count, total_bytes, avg_len, max_len, min_len
-                )
-            }
-        }
+        result.to_detail_string()
     }
 
     // ── Search history ──
