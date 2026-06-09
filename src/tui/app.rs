@@ -1705,9 +1705,13 @@ mod tests {
         let detail = app.collect_detail.as_ref().unwrap();
         assert!(detail.contains("Count: 200 lines"));
 
-        // Should have stored result for HEAD node (node 0)
-        assert!(app.collect_results.contains_key(&0));
-        assert_eq!(app.collect_results.get(&0).unwrap(), "Count: 200");
+        // Collect is queued as an operation. Apply it to create the node.
+        app.apply_pending();
+
+        // After apply_pending, the collect summary should be stored at the new HEAD.
+        let head = app.repo.borrow().as_ref().unwrap().head_node_id();
+        assert!(app.collect_results.contains_key(&head));
+        assert_eq!(app.collect_results.get(&head).unwrap(), "Count: 200");
     }
 
     #[test]
@@ -1805,14 +1809,15 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut app = setup_app(&tmp);
 
-        // Run a collect before building history
+        // Run a collect and apply it to create a history node
         app.run_collect(Collector::Count { pattern: None });
+        app.apply_pending();
         app.build_history();
 
-        // The root node (node 0) should have the collect summary
-        let root_node = app.history_nodes.iter().find(|n| n.id == 0);
-        assert!(root_node.is_some());
-        let summary = root_node.unwrap().collect_summary.as_ref();
+        // The collect node (node 1) should have the collect summary
+        let collect_node = app.history_nodes.iter().find(|n| n.id == 1);
+        assert!(collect_node.is_some());
+        let summary = collect_node.unwrap().collect_summary.as_ref();
         assert_eq!(summary.unwrap(), "Count: 200");
     }
 
@@ -1846,22 +1851,28 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut app = setup_app(&tmp);
 
-        // Run collect at node 0
+        // Run collect at node 0 and apply it
         app.run_collect(Collector::Count { pattern: None });
-        assert_eq!(app.collect_results.get(&0).unwrap(), "Count: 200");
+        app.apply_pending();
+        let first_head = app.repo.borrow().as_ref().unwrap().head_node_id();
+        assert_eq!(app.collect_results.get(&first_head).unwrap(), "Count: 200");
 
-        // Apply an operation to create a new node
+        // Undo back to root to get original data back
+        app.queue_undo();
+        app.apply_pending();
+
+        // Apply a filter to reduce lines, then collect again
         app.queue_operation(Operation::Filter {
             pattern: "ERROR".to_string(),
             keep: true,
         });
         app.apply_pending();
 
-        // Run another collect at the new HEAD
         app.run_collect(Collector::Count { pattern: None });
-        let new_head = app.repo.borrow().as_ref().unwrap().head_node_id();
-        assert!(app.collect_results.contains_key(&new_head));
-        assert_eq!(app.collect_results.get(&new_head).unwrap(), "Count: 50");
+        app.apply_pending();
+        let second_head = app.repo.borrow().as_ref().unwrap().head_node_id();
+        assert!(app.collect_results.contains_key(&second_head));
+        assert_eq!(app.collect_results.get(&second_head).unwrap(), "Count: 50");
     }
 
     // ── clear_search ──
