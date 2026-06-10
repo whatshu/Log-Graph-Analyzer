@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "lograph"
-version = "0.0.1"
+version = "0.0.2"
 description = "Log Graph Analyzer — high-performance log analysis tool for large text files (>10GB)"
 requires-python = ">=3.10"
 dependencies = [
