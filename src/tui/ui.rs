@@ -339,18 +339,25 @@ fn render_repo_list(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
+    let cursor = app.repo_cursor.min(repos.len().saturating_sub(1));
     let lines: Vec<Line> = repos
         .iter()
-        .map(|name| {
+        .enumerate()
+        .map(|(i, name)| {
             let marker = if *name == active { " * " } else { "   " };
-            let style = if *name == app.repo_name {
+            let is_selected = i == cursor;
+            let is_loaded = *name == app.repo_name;
+            let style = if is_selected {
+                Style::default().fg(Color::Black).bg(COLOR_HIGHLIGHT).add_modifier(Modifier::BOLD)
+            } else if is_loaded {
                 Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)
             } else if *name == active {
                 Style::default().fg(COLOR_HIGHLIGHT)
             } else {
                 Style::default().fg(COLOR_FG)
             };
-            Line::from(Span::styled(format!("{}{}", marker, name), style))
+            let cursor_mark = if is_selected { ">" } else { " " };
+            Line::from(Span::styled(format!("{}{} {}", cursor_mark, marker, name), style))
         })
         .collect();
 

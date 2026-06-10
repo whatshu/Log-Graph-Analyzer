@@ -82,6 +82,9 @@ pub struct App {
     pub show_help: bool,
     pub should_quit: bool,
 
+    // Repo list view
+    pub repo_cursor: usize,
+
     // History view
     pub history_cursor: usize,
     pub history_nodes: Vec<HistoryNode>,
@@ -117,6 +120,8 @@ pub struct App {
 
     // Pending history export (node_idx, export started flag)
     pub pending_history_export: Option<usize>,
+    /// Pending repo clone source name
+    pub pending_repo_clone_src: Option<String>,
 
     // Collect results stored by node_id
     pub collect_results: HashMap<usize, String>,
@@ -237,6 +242,7 @@ impl App {
             error_message: None,
             show_help: false,
             should_quit: false,
+            repo_cursor: 0,
             history_cursor: 0,
             history_nodes: Vec::new(),
             viewed_node_id: None,
@@ -246,6 +252,7 @@ impl App {
             terminal_width: 80, // default, updated on first render
             ascii_only: !detect_utf8_locale(),
             pending_history_export: None,
+            pending_repo_clone_src: None,
             collect_results: HashMap::new(),
             pending_collect_summary: None,
             collect_detail: None,

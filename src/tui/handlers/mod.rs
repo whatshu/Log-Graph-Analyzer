@@ -17,6 +17,12 @@ pub fn normal_mode(app: &mut App, key: KeyEvent) {
                         app.history_cursor += 1;
                     }
                 }
+                ViewKind::RepoList => {
+                    let repos = app.workspace.list().unwrap_or_default();
+                    if app.repo_cursor + 1 < repos.len() {
+                        app.repo_cursor += 1;
+                    }
+                }
                 _ => app.scroll_down(1),
             }
         }
@@ -25,6 +31,11 @@ pub fn normal_mode(app: &mut App, key: KeyEvent) {
                 ViewKind::History => {
                     if app.history_cursor > 0 {
                         app.history_cursor -= 1;
+                    }
+                }
+                ViewKind::RepoList => {
+                    if app.repo_cursor > 0 {
+                        app.repo_cursor -= 1;
                     }
                 }
                 _ => app.scroll_up(1),
@@ -39,6 +50,8 @@ pub fn normal_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Char('g') => {
             if app.active_view == ViewKind::History {
                 app.history_cursor = 0;
+            } else if app.active_view == ViewKind::RepoList {
+                app.repo_cursor = 0;
             } else {
                 app.go_to_line(0);
             }
@@ -46,6 +59,9 @@ pub fn normal_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Char('G') => {
             if app.active_view == ViewKind::History {
                 app.history_cursor = app.history_nodes.len().saturating_sub(1);
+            } else if app.active_view == ViewKind::RepoList {
+                let repos = app.workspace.list().unwrap_or_default();
+                app.repo_cursor = repos.len().saturating_sub(1);
             } else if app.total_lines > 0 {
                 app.go_to_line(app.total_lines - 1);
             }
@@ -77,11 +93,22 @@ pub fn normal_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Char('$') => app.go_to_line_end(),
 
         // View switching
-        // c: enter collect command mode
+        // c: enter collect command mode, or clone repo in RepoList
         KeyCode::Char('c') => {
-            app.input_mode = InputMode::Command;
-            app.input_buffer = String::from("collect ");
-            app.input_prompt = String::from(":");
+            if app.active_view == ViewKind::RepoList {
+                let repos = app.workspace.list().unwrap_or_default();
+                if app.repo_cursor < repos.len() {
+                    let src = repos[app.repo_cursor].clone();
+                    app.input_mode = InputMode::Input;
+                    app.input_buffer.clear();
+                    app.input_prompt = format!("Clone '{}' as (new name): ", src);
+                    app.pending_repo_clone_src = Some(src);
+                }
+            } else {
+                app.input_mode = InputMode::Command;
+                app.input_buffer = String::from("collect ");
+                app.input_prompt = String::from(":");
+            }
         }
         KeyCode::Char('h') => {
             app.horizontal_scroll = 0;
@@ -104,6 +131,11 @@ pub fn normal_mode(app: &mut App, key: KeyEvent) {
             app.load_viewport();
         }
         KeyCode::Char('r') => {
+            // Clamp repo_cursor when entering RepoList view
+            let repos = app.workspace.list().unwrap_or_default();
+            if app.repo_cursor >= repos.len() {
+                app.repo_cursor = repos.len().saturating_sub(1);
+            }
             app.active_view = ViewKind::RepoList;
         }
         KeyCode::Char('s') => {
@@ -229,10 +261,8 @@ pub fn normal_mode(app: &mut App, key: KeyEvent) {
             } else if app.active_view == ViewKind::RepoList {
                 if let Ok(repos) = app.workspace.list() {
                     if !repos.is_empty() {
-                        let idx = 0usize; // Simplified — would need cursor in repo list
-                        if idx < repos.len() {
-                            app.open_repo(Some(&repos[idx]));
-                        }
+                        let idx = app.repo_cursor.min(repos.len().saturating_sub(1));
+                        app.open_repo(Some(&repos[idx]));
                     }
                 }
             }
@@ -275,7 +305,30 @@ pub fn normal_mode(app: &mut App, key: KeyEvent) {
             }
         }
         KeyCode::Char('d') => {
-            if app.active_view == ViewKind::History && app.history_cursor < app.history_nodes.len() {
+            if app.active_view == ViewKind::RepoList {
+                let repos = app.workspace.list().unwrap_or_default();
+                if app.repo_cursor < repos.len() {
+                    let name = repos[app.repo_cursor].clone();
+                    // If deleting the currently open repo, close it first
+                    if name == app.repo_name {
+                        *app.repo.borrow_mut() = None;
+                        app.repo_name.clear();
+                        app.viewport_lines.clear();
+                        app.total_lines = 0;
+                    }
+                    match app.workspace.remove_repo(&name) {
+                        Ok(()) => {
+                            app.status_message = format!("Deleted repo '{}'", name);
+                            // Clamp cursor after deletion
+                            let new_repos = app.workspace.list().unwrap_or_default();
+                            if app.repo_cursor >= new_repos.len() {
+                                app.repo_cursor = new_repos.len().saturating_sub(1);
+                            }
+                        }
+                        Err(e) => app.error_message = Some(format!("Delete failed: {}", e)),
+                    }
+                }
+            } else if app.active_view == ViewKind::History && app.history_cursor < app.history_nodes.len() {
                 let node_id = app.history_nodes[app.history_cursor].id;
                 if let Some(base) = app.diff_base_node_id.take() {
                     if base == node_id {
@@ -526,9 +579,90 @@ fn execute_command(app: &mut App, cmd: &str) {
         } else {
             app.error_message = Some("No repo open".to_string());
         }
-    } else if let Some(name) = cmd.strip_prefix("repo ") {
-        let name = name.trim();
-        app.open_repo(Some(name));
+    } else if let Some(args) = cmd.strip_prefix("repo ") {
+        let args = args.trim();
+        if let Some(name) = args.strip_prefix("delete ") {
+            let name = name.trim();
+            if name.is_empty() {
+                app.error_message = Some("Usage: :repo delete <name>".to_string());
+            } else {
+                // Close repo if it's the one being deleted
+                if name == app.repo_name {
+                    *app.repo.borrow_mut() = None;
+                    app.repo_name.clear();
+                    app.viewport_lines.clear();
+                    app.total_lines = 0;
+                }
+                match app.workspace.remove_repo(name) {
+                    Ok(()) => {
+                        app.status_message = format!("Deleted repo '{}'", name);
+                        // Clamp repo cursor
+                        let repos = app.workspace.list().unwrap_or_default();
+                        if app.repo_cursor >= repos.len() {
+                            app.repo_cursor = repos.len().saturating_sub(1);
+                        }
+                    }
+                    Err(e) => app.error_message = Some(format!("Delete failed: {}", e)),
+                }
+            }
+        } else if let Some(clone_args) = args.strip_prefix("clone ") {
+            let parts: Vec<&str> = clone_args.split_whitespace().collect();
+            if parts.len() != 2 {
+                app.error_message = Some("Usage: :repo clone <src> <dst>".to_string());
+            } else {
+                match app.workspace.clone_repo(parts[0], parts[1]) {
+                    Ok(repo) => {
+                        let dst = parts[1].to_string();
+                        app.total_lines = repo.original_line_count();
+                        app.line_count_is_original = repo.history_tree().is_empty();
+                        app.repo_name = dst.clone();
+                        *app.repo.borrow_mut() = Some(repo);
+                        app.scroll_offset = 0;
+                        app.cursor_line = 0;
+                        app.active_view = ViewKind::LogView;
+                        app.load_viewport();
+                        app.status_message = format!("Cloned '{}' as '{}'", parts[0], dst);
+                        let _ = app.workspace.set_active(&dst);
+                    }
+                    Err(e) => app.error_message = Some(format!("Clone failed: {}", e)),
+                }
+            }
+        } else if let Some(import_args) = args.strip_prefix("import ") {
+            let parts: Vec<&str> = import_args.split_whitespace().collect();
+            if parts.is_empty() {
+                app.error_message = Some("Usage: :repo import <file> [name]".to_string());
+            } else {
+                let path = Path::new(parts[0]);
+                if !path.exists() {
+                    app.error_message = Some(format!("File not found: {}", parts[0]));
+                } else {
+                    let name = if parts.len() >= 2 {
+                        parts[1].to_string()
+                    } else {
+                        path.file_stem()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| String::from("default"))
+                    };
+                    match app.workspace.import_file(&name, path) {
+                        Ok(repo) => {
+                            app.total_lines = repo.original_line_count();
+                            app.line_count_is_original = true;
+                            app.repo_name = name.clone();
+                            *app.repo.borrow_mut() = Some(repo);
+                            app.scroll_offset = 0;
+                            app.cursor_line = 0;
+                            app.active_view = ViewKind::LogView;
+                            app.load_viewport();
+                            app.status_message = format!("Imported '{}' as '{}'", parts[0], name);
+                        }
+                        Err(e) => app.error_message = Some(format!("Import failed: {}", e)),
+                    }
+                }
+            }
+        } else {
+            let name = args;
+            app.open_repo(Some(name));
+        }
     } else if let Some(path) = cmd.strip_prefix("append ") {
         let path = path.trim();
         let append_result = {
@@ -991,6 +1125,30 @@ fn handle_input(app: &mut App, prompt: &str, input: &str) {
             app.tag_store.add_tag(&app.repo_name, tag);
             let _ = app.tag_store.save(&app.workspace.root());
             app.status_message = format!("Tag '{}' created", input);
+        }
+    } else if prompt.starts_with("Clone '") {
+        // Clone repo: prompt is "Clone 'src_name' as (new name): "
+        if let Some(src) = app.pending_repo_clone_src.take() {
+            let dst = input.trim().to_string();
+            if dst.is_empty() {
+                app.error_message = Some("Clone destination name cannot be empty".into());
+            } else {
+                match app.workspace.clone_repo(&src, &dst) {
+                    Ok(repo) => {
+                        app.total_lines = repo.original_line_count();
+                        app.line_count_is_original = repo.history_tree().is_empty();
+                        app.repo_name = dst.clone();
+                        *app.repo.borrow_mut() = Some(repo);
+                        app.scroll_offset = 0;
+                        app.cursor_line = 0;
+                        app.active_view = ViewKind::LogView;
+                        app.load_viewport();
+                        app.status_message = format!("Cloned '{}' as '{}'", src, dst);
+                        let _ = app.workspace.set_active(&dst);
+                    }
+                    Err(e) => app.error_message = Some(format!("Clone failed: {}", e)),
+                }
+            }
         }
     } else if prompt.contains("Export path") {
         let node_idx = app.pending_history_export.take().unwrap_or(0);
