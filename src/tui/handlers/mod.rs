@@ -117,10 +117,6 @@ pub fn normal_mode(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Char('l') => {
             app.horizontal_scroll = 0;
-            // If viewing a historical node, return to HEAD first
-            if app.viewed_node_id.is_some() {
-                app.return_to_head();
-            }
             app.active_view = ViewKind::LogView;
             app.load_viewport();
         }
@@ -251,12 +247,14 @@ pub fn normal_mode(app: &mut App, key: KeyEvent) {
             }
         }
 
-        // History view specific
+        // History view specific — Enter checks out a node and shows its state
         KeyCode::Enter => {
             if app.active_view == ViewKind::History {
                 if app.history_cursor < app.history_nodes.len() {
                     let node_id = app.history_nodes[app.history_cursor].id;
                     app.queue_checkout(node_id);
+                    app.horizontal_scroll = 0;
+                    app.active_view = ViewKind::LogView;
                 }
             } else if app.active_view == ViewKind::RepoList {
                 if let Ok(repos) = app.workspace.list() {
@@ -1538,8 +1536,10 @@ mod tests {
 
         // For every cursor position, simulate pressing Enter and verify
         // CheckoutTo contains the resolved node ID from history_nodes,
-        // NOT the raw cursor index.
+        // NOT the raw cursor index. Reset active_view to History before
+        // each call since Enter now switches to LogView.
         for cursor in 0..app.history_nodes.len() {
+            app.active_view = ViewKind::History;
             app.history_cursor = cursor;
             let expected_id = app.history_nodes[cursor].id;
 
