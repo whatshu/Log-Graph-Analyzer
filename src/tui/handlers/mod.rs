@@ -6,11 +6,6 @@ use std::path::Path;
 use super::app::{App, InputMode, PendingOp, ViewKind};
 
 pub fn normal_mode(app: &mut App, key: KeyEvent) {
-    // Dispatch TagManager view keys
-    if app.active_view == ViewKind::TagManager {
-        handle_tag_manager(app, key);
-        return;
-    }
     match key.code {
         KeyCode::Char('q') => {
             app.should_quit = true;
@@ -244,25 +239,13 @@ pub fn normal_mode(app: &mut App, key: KeyEvent) {
         }
         // ── Tag system ──
         KeyCode::Char('t') => {
-            app.active_view = ViewKind::TagManager;
-            app.tag_cursor = 0;
-            app.status_message = String::from("Tag Manager — Enter:activate c:create r:rename d:delete q:back");
-        }
-        KeyCode::Char('v') => {
-            app.visual_select_start = Some(app.cursor_line);
-            app.visual_select_active = true;
-            app.input_mode = InputMode::VisualSelect;
-            app.status_message = String::from("Visual select — j/k extend, Enter confirm, Esc cancel");
-        }
-        KeyCode::Char('V') => {
-            app.visual_select_start = Some(app.cursor_line);
-            app.visual_select_active = true;
-            app.input_mode = InputMode::VisualSelect;
-            app.status_message = String::from("Visual select line — j/k extend, Enter confirm, Esc cancel");
-        }
-        KeyCode::Char('T') => {
-            app.active_tag_scope = None;
-            app.status_message = String::from("Tag scope cleared");
+            app.show_tag_manager = !app.show_tag_manager;
+            app.tag_manager_cursor = 0;
+            app.tag_manager_scroll = 0;
+            app.tag_manager_h_scroll = 0;
+            if app.show_tag_manager {
+                app.status_message = String::from("Tag Manager — j/k:nav  Enter:jump  d:del  r:rename  y:copy  q:close");
+            }
         }
 
         // ── History node operations (in History view) ──
@@ -984,6 +967,31 @@ fn handle_input(app: &mut App, prompt: &str, input: &str) {
             new_content: input.to_string(),
         });
         app.status_message = format!("Modified line {}", line_index + 1);
+    } else if prompt.starts_with("Rename tag") {
+        // Extract old name from prompt: "Rename tag 'oldname' to: "
+        if let Some(old_name) = app.pending_tag_rename.take() {
+            let new_name = input.to_string();
+            if !new_name.is_empty() {
+                app.tag_store.rename_tag(&app.repo_name, &old_name, &new_name);
+                let _ = app.tag_store.save(&app.workspace.root());
+                app.status_message = format!("Tag '{}' renamed to '{}'", old_name, new_name);
+            }
+        }
+    } else if prompt.starts_with("Tag name [") {
+        // Create new tag from visual select
+        if !input.is_empty() {
+            let start = app.cursor_line; // cursor_line was set as the start
+            let end = app.cursor_line;
+            // Actually, we need to read the range from the prompt
+            let tag = lograph::tag::Tag {
+                name: input.to_string(),
+                ranges: vec![(start, end)],
+                created_at: chrono::Utc::now(),
+            };
+            app.tag_store.add_tag(&app.repo_name, tag);
+            let _ = app.tag_store.save(&app.workspace.root());
+            app.status_message = format!("Tag '{}' created", input);
+        }
     } else if prompt.contains("Export path") {
         let node_idx = app.pending_history_export.take().unwrap_or(0);
         app.queue_export_from(node_idx, input.to_string());
@@ -1000,149 +1008,94 @@ fn handle_input(app: &mut App, prompt: &str, input: &str) {
     }
 }
 
-// ── Tag handlers ──
-
-/// Handle visual line selection mode.
-pub fn visual_select_mode(app: &mut App, key: KeyEvent) {
+/// Handle tag manager popup key events.
+pub fn handle_tag_manager_popup(app: &mut App, key: KeyEvent) {
     match key.code {
-        KeyCode::Esc => {
-            app.input_mode = InputMode::Normal;
-            app.visual_select_active = false;
-            app.visual_select_start = None;
-            app.status_message = String::from("Visual select cancelled");
+        KeyCode::Char('?') => {
+            app.show_help = !app.show_help;
         }
-        KeyCode::Enter => {
-            // Confirm selection — prompt for tag name
-            let start = app.visual_select_start.unwrap_or(app.cursor_line);
-            let end = app.cursor_line;
-            let (s, e) = if start <= end { (start, end) } else { (end, start) };
-            let _ranges = vec![(s, e)];
-            let default_name = app.tag_store.next_auto_name(&app.repo_name);
-            app.input_mode = InputMode::TagRename;
-            app.input_buffer = default_name;
-            app.input_prompt = format!("Tag name [{}-{}]: ", s + 1, e + 1);
-            // Store ranges temporarily in tag scope
-            app.visual_select_active = false;
-            app.visual_select_start = Some(s);
-        }
-        KeyCode::Char('j') | KeyCode::Down => {
-            app.scroll_down(1);
-            app.cursor_line = (app.cursor_line + 1).min(app.total_lines.saturating_sub(1));
-        }
-        KeyCode::Char('k') | KeyCode::Up => {
-            if app.cursor_line > 0 {
-                app.cursor_line -= 1;
-                app.scroll_up(1);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Handle tag rename/capture input after visual select.
-pub fn tag_rename_mode(app: &mut App, key: KeyEvent) {
-    match key.code {
-        KeyCode::Enter => {
-            let name = app.input_buffer.clone();
-            let start = app.visual_select_start.take().unwrap_or(0);
-            let end = app.cursor_line;
-            let (s, e) = if start <= end { (start, end) } else { (end, start) };
-            app.input_buffer.clear();
-            app.input_mode = InputMode::Normal;
-            app.visual_select_active = false;
-
-            if !name.is_empty() {
-                let tag = lograph::tag::Tag {
-                    name: name.clone(),
-                    ranges: vec![(s, e)],
-                    created_at: chrono::Utc::now(),
-                };
-                app.tag_store.add_tag(&app.repo_name, tag);
-                let _ = app.tag_store.save(&app.workspace.root());
-                app.status_message = format!(
-                    "Tag '{}' created for lines {}-{} ({} lines)",
-                    name,
-                    s + 1,
-                    e + 1,
-                    e - s + 1
-                );
-            }
-        }
-        KeyCode::Esc => {
-            app.input_buffer.clear();
-            app.input_mode = InputMode::Normal;
-            app.visual_select_active = false;
-            app.visual_select_start = None;
-            app.status_message = String::from("Tag creation cancelled");
-        }
-        KeyCode::Char(c) => app.input_buffer.push(c),
-        KeyCode::Backspace => { app.input_buffer.pop(); }
-        _ => {}
-    }
-}
-
-/// Handle tag management view key events. Called from normal_mode when
-/// active_view is TagManager, processed through the Esc/q/handler.
-/// This is processed inline in normal_mode with key check helpers.
-pub fn handle_tag_manager(app: &mut App, key: KeyEvent) {
-    match key.code {
         KeyCode::Char('q') | KeyCode::Esc => {
-            app.active_view = ViewKind::LogView;
+            app.show_tag_manager = false;
             app.status_message = String::from("Tag manager closed");
         }
-        KeyCode::Char('c') => {
-            // Create new tag via visual select
-            app.active_view = ViewKind::LogView;
-            app.visual_select_start = Some(app.cursor_line);
-            app.visual_select_active = true;
-            app.input_mode = InputMode::VisualSelect;
-            app.status_message = String::from("Visual select — j/k extend, Enter confirm, Esc cancel");
-        }
         KeyCode::Enter => {
-            // Activate selected tag as scope
+            // Jump to selected tag's start line
             let tags = app.tag_store.get_tags(&app.repo_name).to_vec();
-            if app.tag_cursor < tags.len() {
-                let tag = &tags[app.tag_cursor];
-                let scope = app.tag_store.make_scope(&app.repo_name, &tag.name);
-                app.active_tag_scope = scope;
+            if app.tag_manager_cursor < tags.len() {
+                let tag = &tags[app.tag_manager_cursor];
+                let mut jumped = false;
+                if let Some(&(start, _)) = tag.ranges.first() {
+                    app.cursor_line = start;
+                    if start < app.scroll_offset || start >= app.scroll_offset + 50 {
+                        app.scroll_offset = start.saturating_sub(5);
+                    }
+                    app.load_viewport();
+                    app.status_message = format!("Jumped to tag '{}' (line {})", tag.name, start + 1);
+                    jumped = true;
+                }
+                if !jumped {
+                    app.status_message = format!("Tag '{}' has no ranges", tag.name);
+                }
+                app.show_tag_manager = false;
                 app.active_view = ViewKind::LogView;
-                app.status_message = format!("Tag scope set to '{}' — operations now scoped", tag.name);
             }
         }
         KeyCode::Char('r') => {
             // Rename selected tag
             let tags = app.tag_store.get_tags(&app.repo_name).to_vec();
-            if app.tag_cursor < tags.len() {
-                let old_name = tags[app.tag_cursor].name.clone();
+            if app.tag_manager_cursor < tags.len() {
+                let old_name = tags[app.tag_manager_cursor].name.clone();
                 app.input_mode = InputMode::Input;
                 app.input_buffer = old_name.clone();
                 app.input_prompt = format!("Rename tag '{}' to: ", old_name);
-                // Store old name for rename on Enter
-                app.pending_history_export = Some(app.tag_cursor);
+                app.pending_tag_rename = Some(old_name);
             }
         }
         KeyCode::Char('d') => {
             // Delete selected tag
             let tags = app.tag_store.get_tags(&app.repo_name).to_vec();
-            if app.tag_cursor < tags.len() {
-                let name = &tags[app.tag_cursor].name;
-                app.tag_store.remove_tag(&app.repo_name, name);
-                if app.tag_cursor >= tags.len().saturating_sub(1) {
-                    app.tag_cursor = app.tag_cursor.saturating_sub(1);
+            if app.tag_manager_cursor < tags.len() {
+                let name = tags[app.tag_manager_cursor].name.clone();
+                app.tag_store.remove_tag(&app.repo_name, &name);
+                if app.tag_manager_cursor >= tags.len().saturating_sub(1) {
+                    app.tag_manager_cursor = app.tag_manager_cursor.saturating_sub(1);
                 }
+                let _ = app.tag_store.save(&app.workspace.root());
                 app.status_message = format!("Tag '{}' deleted", name);
+            }
+        }
+        KeyCode::Char('y') => {
+            // Copy tag (duplicate with auto name)
+            let tags = app.tag_store.get_tags(&app.repo_name).to_vec();
+            if app.tag_manager_cursor < tags.len() {
+                let tag = &tags[app.tag_manager_cursor];
+                let new_name = app.tag_store.next_auto_name(&app.repo_name);
+                let new_tag = lograph::tag::Tag {
+                    name: new_name.clone(),
+                    ranges: tag.ranges.clone(),
+                    created_at: chrono::Utc::now(),
+                };
+                app.tag_store.add_tag(&app.repo_name, new_tag);
+                let _ = app.tag_store.save(&app.workspace.root());
+                app.status_message = format!("Tag '{}' copied to '{}'", tag.name, new_name);
             }
         }
         KeyCode::Char('j') | KeyCode::Down => {
             let tags = app.tag_store.get_tags(&app.repo_name);
-            if app.tag_cursor + 1 < tags.len() {
-                app.tag_cursor += 1;
+            if app.tag_manager_cursor + 1 < tags.len() {
+                app.tag_manager_cursor += 1;
             }
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            if app.tag_cursor > 0 {
-                app.tag_cursor -= 1;
+            if app.tag_manager_cursor > 0 {
+                app.tag_manager_cursor -= 1;
             }
+        }
+        KeyCode::Left => {
+            app.tag_manager_h_scroll = app.tag_manager_h_scroll.saturating_sub(8);
+        }
+        KeyCode::Right => {
+            app.tag_manager_h_scroll = app.tag_manager_h_scroll.saturating_add(8);
         }
         _ => {}
     }

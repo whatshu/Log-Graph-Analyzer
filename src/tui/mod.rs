@@ -129,6 +129,12 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         }
     }
 
+    // If tag manager popup is showing, handle tag manager keys
+    if app.show_tag_manager {
+        handlers::handle_tag_manager_popup(app, key);
+        return;
+    }
+
     // Esc behavior: in file browser, cancel; otherwise clear input modes
     if key.code == KeyCode::Esc {
         match app.input_mode {
@@ -158,8 +164,6 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         InputMode::Search => handlers::search_mode(app, key),
         InputMode::Input => handlers::input_mode(app, key),
         InputMode::FileBrowser => handlers::file_browser_mode(app, key),
-        InputMode::VisualSelect => handlers::visual_select_mode(app, key),
-        InputMode::TagRename => handlers::tag_rename_mode(app, key),
     }
 }
 

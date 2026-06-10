@@ -403,7 +403,8 @@ impl HistoryTree {
     /// Returns a list suitable for git-like display rendering.
     pub fn topological_order(&self) -> Vec<TopoEntry> {
         let mut result = Vec::new();
-        self.visit_subtree(0, 0, &mut Vec::new(), &mut result);
+        // Root node: no parent, so is_last_child=true, sibling_count=1
+        self.visit_subtree(0, 0, &mut Vec::new(), &mut result, true, 1);
         result
     }
 
@@ -413,6 +414,8 @@ impl HistoryTree {
         depth: usize,
         ancestors: &mut Vec<usize>,
         result: &mut Vec<TopoEntry>,
+        is_last_child: bool,
+        sibling_count: usize,
     ) {
         let node = match self.get_node(node_id) {
             Some(n) => n,
@@ -436,6 +439,7 @@ impl HistoryTree {
             .collect();
 
         let is_current_head = self.head() == node_id;
+        let num_children = node.children_ids.len();
 
         result.push(TopoEntry {
             node_id,
@@ -445,18 +449,20 @@ impl HistoryTree {
             is_current_head,
             description: desc,
             applied_at: node.applied_at,
-            has_children: !node.children_ids.is_empty(),
+            has_children: num_children > 0,
             deleted: node.deleted,
             tag_name: node.tag_scope.as_ref().map(|s| s.tag_name.clone()),
+            is_last_child,
+            sibling_count,
         });
 
         // Visit children (include deleted nodes — they're shown dimmed)
         for (i, &child_id) in node.children_ids.iter().enumerate() {
-            let is_last = i == node.children_ids.len() - 1;
+            let is_last = i == num_children - 1;
             if !is_last {
                 ancestors.push(node_id);
             }
-            self.visit_subtree(child_id, depth + 1, ancestors, result);
+            self.visit_subtree(child_id, depth + 1, ancestors, result, is_last, num_children);
             if !is_last {
                 ancestors.pop();
             }
@@ -485,6 +491,10 @@ pub struct TopoEntry {
     pub deleted: bool,
     /// Tag scope name if this node was created with a tag scope.
     pub tag_name: Option<String>,
+    /// Whether this node is the last child of its parent.
+    pub is_last_child: bool,
+    /// Number of children the parent has (1 = only child, >1 = fork point).
+    pub sibling_count: usize,
 }
 
 #[cfg(test)]

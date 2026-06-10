@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -68,53 +70,80 @@ pub fn render(f: &mut Frame, app: &mut App) {
     if app.show_collect_detail {
         render_collect_detail(f, f.area(), app);
     }
+
+    if app.show_tag_manager {
+        render_tag_manager(f, f.area(), app);
+    }
 }
 
-/// Context-sensitive action bar showing available non-vim operations.
+/// Context-sensitive action bar showing available keyboard shortcuts.
+/// When a popup is active (tag manager, help, etc.), hints for that popup are shown.
+/// Otherwise, hints reflect the current ViewKind.
 fn render_action_bar(f: &mut Frame, area: Rect, app: &App) {
-    let hints = match app.active_view {
-        ViewKind::LogView => vec![
-            ("← → ^ $:HScroll", COLOR_DIM),
-            ("/:Search", COLOR_ACCENT),
-            ("f/F:Filter", COLOR_ACCENT),
-            ("c:Collect", COLOR_ACCENT),
-            (":Cmd", COLOR_ACCENT),
-            ("u:Undo", COLOR_ACCENT),
-            ("i:Import", COLOR_HIGHLIGHT),
-            ("e:Export", COLOR_HIGHLIGHT),
-            ("h:History", COLOR_HIGHLIGHT),
-            ("r:Repos", COLOR_DIM),
-            ("s:Stats", COLOR_DIM),
-            ("?:Help", COLOR_DIM),
-            ("q:Quit", COLOR_ERROR),
-        ],
-        ViewKind::RepoList => vec![
-            ("Enter:Open", COLOR_HIGHLIGHT),
-            ("i:Import", COLOR_HIGHLIGHT),
-            ("c:Clone", COLOR_ACCENT),
+    let hints: Vec<(&str, Color)> = if app.show_tag_manager {
+        vec![
+            ("j/k:Select", COLOR_ACCENT),
+            ("Enter:Activate", COLOR_HIGHLIGHT),
+            ("r:Rename", COLOR_ACCENT),
             ("d:Delete", COLOR_ERROR),
-            ("l:Log", COLOR_DIM),
-        ],
-        ViewKind::History => vec![
-            ("↑↓:Select", COLOR_ACCENT),
-            ("Spc:Mark", COLOR_ACCENT),
-            ("m:Merge", COLOR_HIGHLIGHT),
-            ("d:Diff", COLOR_HIGHLIGHT),
-            ("y:Yank", COLOR_ACCENT),
-            ("p:Paste", COLOR_ACCENT),
-            ("D:Del", COLOR_ERROR),
-            ("Enter:View", COLOR_HIGHLIGHT),
-            ("?:Help", COLOR_DIM),
-        ],
-        ViewKind::Analytics => vec![
-            ("l:Log", COLOR_DIM),
-            ("h:History", COLOR_DIM),
-            ("?:Help", COLOR_DIM),
-        ],
-        _ => vec![
-            ("?:Help", COLOR_DIM),
-            ("q:Quit", COLOR_ERROR),
-        ],
+            ("q/Esc:Close", COLOR_DIM),
+        ]
+    } else if app.show_help {
+        vec![
+            ("q/?/Esc:Close help", COLOR_ACCENT),
+        ]
+    } else {
+        match app.active_view {
+            ViewKind::LogView => vec![
+                ("j/k:Scroll", COLOR_ACCENT),
+                ("/:Search", COLOR_ACCENT),
+                ("n/N:Match", COLOR_ACCENT),
+                ("f/F:Filter", COLOR_ACCENT),
+                ("R:Replace", COLOR_HIGHLIGHT),
+                ("u:Undo", COLOR_HIGHLIGHT),
+                ("c:Collect", COLOR_ACCENT),
+                ("a:Append", COLOR_HIGHLIGHT),
+                ("e:Export", COLOR_HIGHLIGHT),
+                ("t:Tags", COLOR_DIM),
+                ("h:History", COLOR_HIGHLIGHT),
+                ("?:Help", COLOR_DIM),
+                ("q:Quit", COLOR_ERROR),
+            ],
+            ViewKind::History => vec![
+                ("j/k:Select", COLOR_ACCENT),
+                ("gg/G:Top/Bot", COLOR_DIM),
+                ("Space:Mark", COLOR_ACCENT),
+                ("m:Merge", COLOR_HIGHLIGHT),
+                ("d:Diff", COLOR_HIGHLIGHT),
+                ("y:Yank", COLOR_ACCENT),
+                ("p:Paste", COLOR_ACCENT),
+                ("Enter:View", COLOR_HIGHLIGHT),
+                ("u:Undo", COLOR_HIGHLIGHT),
+                ("D:Del", COLOR_ERROR),
+                ("l:Log", COLOR_DIM),
+                ("?:Help", COLOR_DIM),
+            ],
+            ViewKind::RepoList => vec![
+                ("j/k:Select", COLOR_ACCENT),
+                ("Enter:Open", COLOR_HIGHLIGHT),
+                ("i:Import", COLOR_HIGHLIGHT),
+                ("c:Clone", COLOR_ACCENT),
+                ("d:Delete", COLOR_ERROR),
+                ("l:Log", COLOR_DIM),
+                ("?:Help", COLOR_DIM),
+            ],
+            ViewKind::Analytics => vec![
+                ("l:Log", COLOR_HIGHLIGHT),
+                ("h:History", COLOR_HIGHLIGHT),
+                ("r:Repos", COLOR_DIM),
+                ("?:Help", COLOR_DIM),
+                ("q:Quit", COLOR_ERROR),
+            ],
+            _ => vec![
+                ("?:Help", COLOR_DIM),
+                ("q:Quit", COLOR_ERROR),
+            ],
+        }
     };
 
     let spans: Vec<Span> = hints
@@ -163,7 +192,7 @@ fn render_tabs(f: &mut Frame, area: Rect, app: &App) {
         ViewKind::History => 1,
         ViewKind::RepoList => 2,
         ViewKind::Analytics => 3,
-        ViewKind::Help | ViewKind::TagManager => 0,
+        ViewKind::Help => 0,
     };
 
     let tabs = Tabs::new(titles)
@@ -185,7 +214,7 @@ fn render_content(f: &mut Frame, area: Rect, app: &App) {
         ViewKind::RepoList => render_repo_list(f, area, app),
         ViewKind::Analytics => render_analytics(f, area, app),
         ViewKind::History => render_history(f, area, app),
-        ViewKind::Help | ViewKind::TagManager => render_log_view(f, area, app),
+        ViewKind::Help => render_log_view(f, area, app),
     }
 }
 
@@ -200,13 +229,28 @@ fn render_log_view(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
+    // Build set of tagged line numbers
+    let tagged_lines: HashSet<usize> = {
+        let mut set = HashSet::new();
+        for tag in app.tag_store.get_tags(&app.repo_name) {
+            for &(s, e) in &tag.ranges {
+                for line in s..=e {
+                    set.insert(line);
+                }
+            }
+        }
+        set
+    };
+
     let line_num_width = if app.total_lines > 0 {
         (app.total_lines as f64).log10() as usize + 1
     } else {
         1
     };
     let line_num_width = line_num_width.max(4);
-    let content_width = area.width.saturating_sub(line_num_width as u16 + 3);
+    // Marker column is 2 chars: glyph + space
+    let marker_width: u16 = 2;
+    let content_width = area.width.saturating_sub(marker_width + line_num_width as u16 + 3);
 
     let title = format!(
         " {} — {} lines ({} ops) ",
@@ -214,6 +258,8 @@ fn render_log_view(f: &mut Frame, area: Rect, app: &App) {
         app.total_lines,
         repo.as_ref().map(|r: &LogRepo| r.history_tree().len().saturating_sub(1)).unwrap_or(0)
     );
+
+    let tag_marker_glyph = if app.ascii_only { "> " } else { "▸ " };
 
     let lines: Vec<Line> = app
         .viewport_lines
@@ -223,6 +269,7 @@ fn render_log_view(f: &mut Frame, area: Rect, app: &App) {
             let global_line = app.scroll_offset + i;
             let is_match = app.search_results.contains(&global_line);
             let is_cursor = global_line == app.cursor_line;
+            let is_tagged = tagged_lines.contains(&global_line);
 
             let num_style = if is_cursor {
                 Style::default()
@@ -231,6 +278,12 @@ fn render_log_view(f: &mut Frame, area: Rect, app: &App) {
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(COLOR_LINE_NUMBER)
+            };
+
+            let marker_style = if is_tagged {
+                Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Rgb(30, 30, 30))
             };
 
             let content_style = if is_match {
@@ -254,6 +307,10 @@ fn render_log_view(f: &mut Frame, area: Rect, app: &App) {
             let truncated = truncate_str(&content_slice, content_width as usize);
 
             Line::from(vec![
+                Span::styled(
+                    if is_tagged { tag_marker_glyph.to_string() } else { "  ".to_string() },
+                    marker_style,
+                ),
                 Span::styled(format!(" {} ", num), num_style),
                 Span::styled(truncated, content_style),
             ])
@@ -564,82 +621,20 @@ fn render_input(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(p, area);
 }
 
-fn render_help_overlay(f: &mut Frame, area: Rect, _app: &App) {
-    let help_text = vec![
-        Line::from(Span::styled(" KEYBINDINGS ", Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD))),
-        Line::from(""),
-        Line::from(vec![Span::styled("  Navigation  ", Style::default().fg(COLOR_ACCENT))]),
-        Line::from(vec![Span::styled("  j/k ↑/↓     ", Style::default().fg(COLOR_ACCENT)), Span::raw("Scroll down/up")]),
-        Line::from(vec![Span::styled("  Ctrl+d/u    ", Style::default().fg(COLOR_ACCENT)), Span::raw("Page down/up")]),
-        Line::from(vec![Span::styled("  gg / G      ", Style::default().fg(COLOR_ACCENT)), Span::raw("Go to first/last line")]),
-        Line::from(""),
-        Line::from(vec![Span::styled("  Search & Filter ", Style::default().fg(COLOR_ACCENT))]),
-        Line::from(vec![Span::styled("  /            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Search (regex)")]),
-        Line::from(vec![Span::styled("  n / N        ", Style::default().fg(COLOR_ACCENT)), Span::raw("Next/prev match")]),
-        Line::from(vec![Span::styled("  f / F        ", Style::default().fg(COLOR_ACCENT)), Span::raw("Filter keep/remove")]),
-        Line::from(vec![Span::styled("  R            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Replace (uses search pattern)")]),
-        Line::from(vec![Span::styled("  u            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Undo last operation")]),
-        Line::from(vec![Span::styled("  :            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Command mode")]),
-        Line::from(""),
-        Line::from(vec![Span::styled("  Collect     ", Style::default().fg(COLOR_ACCENT))]),
-        Line::from(vec![Span::styled("  c            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Enter collect command (:collect ...)")]),
-        Line::from(vec![Span::styled("  count <pat>  ", Style::default().fg(COLOR_ACCENT)), Span::raw("Count lines matching pattern")]),
-        Line::from(vec![Span::styled("  group <p> <i>", Style::default().fg(COLOR_ACCENT)), Span::raw("Group count by capture group")]),
-        Line::from(vec![Span::styled("  topn <p> <i> <n>", Style::default().fg(COLOR_ACCENT)), Span::raw("Top-N by capture group")]),
-        Line::from(vec![Span::styled("  unique <p> <i>", Style::default().fg(COLOR_ACCENT)), Span::raw("Distinct values of group")]),
-        Line::from(vec![Span::styled("  numstats <p> <i>", Style::default().fg(COLOR_ACCENT)), Span::raw("Numeric stats (min/max/avg)")]),
-        Line::from(vec![Span::styled("  linestats    ", Style::default().fg(COLOR_ACCENT)), Span::raw("Line-length statistics")]),
-        Line::from(""),
-        Line::from(vec![Span::styled("  Views       ", Style::default().fg(COLOR_ACCENT))]),
-        Line::from(vec![Span::styled("  l            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Log view")]),
-        Line::from(vec![Span::styled("  H            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Return to HEAD from view")]),
-        Line::from(vec![Span::styled("  h            ", Style::default().fg(COLOR_ACCENT)), Span::raw("History tree")]),
-        Line::from(vec![Span::styled("  r            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Repo list")]),
-        Line::from(vec![Span::styled("  s            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Stats")]),
-        Line::from(vec![Span::styled("  i            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Import file (browser)")]),
-        Line::from(vec![Span::styled("  e            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Export current state")]),
-        Line::from(""),
-        Line::from(vec![Span::styled("  Edit        ", Style::default().fg(COLOR_ACCENT))]),
-        Line::from(vec![Span::styled("  a            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Append file to repo")]),
-        Line::from(vec![Span::styled("  I            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Insert line after cursor")]),
-        Line::from(vec![Span::styled("  M            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Modify current line")]),
-        Line::from(""),
-        Line::from(vec![Span::styled("  Tags        ", Style::default().fg(COLOR_ACCENT))]),
-        Line::from(vec![Span::styled("  v / V        ", Style::default().fg(COLOR_ACCENT)), Span::raw("Visual select lines for tag")]),
-        Line::from(vec![Span::styled("  t            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Tag manager (list/create/activate)")]),
-        Line::from(vec![Span::styled("  T            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Clear active tag scope")]),
-        Line::from(""),
-        Line::from(vec![Span::styled("  History Ops (h view)", Style::default().fg(COLOR_ACCENT))]),
-        Line::from(vec![Span::styled("  Space        ", Style::default().fg(COLOR_ACCENT)), Span::raw("Mark node for multi-select merge")]),
-        Line::from(vec![Span::styled("  m            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Merge marked nodes (OR union)")]),
-        Line::from(vec![Span::styled("  d            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Diff: select base, press again to subtract")]),
-        Line::from(vec![Span::styled("  y            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Yank (copy) node operation")]),
-        Line::from(vec![Span::styled("  p            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Paste yanked operation at cursor")]),
-        Line::from(vec![Span::styled("  D            ", Style::default().fg(COLOR_ACCENT)), Span::raw("Soft-delete node (keeps pattern in history)")]),
-        Line::from(""),
-        Line::from(vec![Span::styled("  Other       ", Style::default().fg(COLOR_ACCENT))]),
-        Line::from(vec![Span::styled("  ?            ", Style::default().fg(COLOR_ACCENT)), Span::raw("This help")]),
-        Line::from(vec![Span::styled("  q / Ctrl+C   ", Style::default().fg(COLOR_ACCENT)), Span::raw("Quit")]),
-        Line::from(""),
-        Line::from(vec![Span::styled("  Commands (:)", Style::default().fg(COLOR_ACCENT))]),
-        Line::from(vec![Span::styled("  :f <pat>     ", Style::default().fg(COLOR_ACCENT)), Span::raw("Filter keep")]),
-        Line::from(vec![Span::styled("  :fr <pat>    ", Style::default().fg(COLOR_ACCENT)), Span::raw("Filter remove")]),
-        Line::from(vec![Span::styled("  :r /pat/repl/", Style::default().fg(COLOR_ACCENT)), Span::raw("Replace")]),
-        Line::from(vec![Span::styled("  :w <path>    ", Style::default().fg(COLOR_ACCENT)), Span::raw("Export to file")]),
-        Line::from(vec![Span::styled("  :d <idx>...  ", Style::default().fg(COLOR_ACCENT)), Span::raw("Delete lines")]),
-        Line::from(vec![Span::styled("  :i <N> <txt> ", Style::default().fg(COLOR_ACCENT)), Span::raw("Insert line after N")]),
-        Line::from(vec![Span::styled("  :m <N> <txt> ", Style::default().fg(COLOR_ACCENT)), Span::raw("Modify line N")]),
-        Line::from(vec![Span::styled("  :append <p>  ", Style::default().fg(COLOR_ACCENT)), Span::raw("Append file")]),
-        Line::from(vec![Span::styled("  :repo <name> ", Style::default().fg(COLOR_ACCENT)), Span::raw("Switch repo")]),
-        Line::from(vec![Span::styled("  :branch <n>  ", Style::default().fg(COLOR_ACCENT)), Span::raw("Create branch")]),
-        Line::from(vec![Span::styled("  :checkout <b>", Style::default().fg(COLOR_ACCENT)), Span::raw("Switch branch")]),
-        Line::from(vec![Span::styled("  :branch del  ", Style::default().fg(COLOR_ACCENT)), Span::raw("Delete branch")]),
-        Line::from(vec![Span::styled("  :merge a b->t", Style::default().fg(COLOR_ACCENT)), Span::raw("Merge repos")]),
-        Line::from(vec![Span::styled("  :branches    ", Style::default().fg(COLOR_ACCENT)), Span::raw("List branches")]),
-        Line::from(vec![Span::styled("  :filters     ", Style::default().fg(COLOR_ACCENT)), Span::raw("List saved filters")]),
-    ];
+fn render_help_overlay(f: &mut Frame, area: Rect, app: &App) {
+    let help_text: Vec<Line> = if app.show_tag_manager {
+        build_tag_manager_help()
+    } else {
+        match app.active_view {
+            ViewKind::LogView => build_log_view_help(),
+            ViewKind::History => build_history_help(),
+            ViewKind::RepoList => build_repo_list_help(),
+            ViewKind::Analytics => build_analytics_help(),
+            _ => build_log_view_help(),
+        }
+    };
 
-    let overlay_w = 60.min(area.width);
+    let overlay_w = 62.min(area.width);
     let overlay_h = (help_text.len() as u16 + 2).min(area.height);
     let overlay_area = Rect {
         x: (area.width.saturating_sub(overlay_w)) / 2,
@@ -656,6 +651,179 @@ fn render_help_overlay(f: &mut Frame, area: Rect, _app: &App) {
         .style(Style::default().bg(Color::Rgb(20, 20, 30)));
     let p = Paragraph::new(help_text).block(block);
     f.render_widget(p, overlay_area);
+}
+
+fn section(title: &str) -> Line<'static> {
+    Line::from(Span::styled(
+        format!("  {}  ", title),
+        Style::default().fg(COLOR_ACCENT),
+    ))
+}
+
+fn key_line(key: &str, desc: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(key.to_string(), Style::default().fg(COLOR_ACCENT)),
+        Span::raw(desc.to_string()),
+    ])
+}
+
+fn build_log_view_help() -> Vec<Line<'static>> {
+    vec![
+        Line::from(Span::styled(" LOG VIEW KEYBINDINGS ", Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD))),
+        Line::from(""),
+        section("Navigation"),
+        key_line("  j/k ↑/↓     ", "  Scroll down/up"),
+        key_line("  Ctrl+d/u    ", "  Page down/up"),
+        key_line("  gg / G      ", "  Go to first/last line"),
+        key_line("  ← → ^ $     ", "  Horizontal scroll / line start/end"),
+        Line::from(""),
+        section("Search & Filter"),
+        key_line("  /            ", "  Search (regex)"),
+        key_line("  n / N        ", "  Next/previous match"),
+        key_line("  f / F        ", "  Filter keep/remove (uses search pattern)"),
+        key_line("  R            ", "  Replace (uses search pattern)"),
+        key_line("  u            ", "  Undo last operation"),
+        key_line("  :            ", "  Command mode"),
+        Line::from(""),
+        section("Collect"),
+        key_line("  c            ", "  Enter collect command (:collect ...)"),
+        key_line("  count <pat>  ", "  Count lines matching pattern"),
+        key_line("  group <p> <i>", "  Group count by capture group"),
+        key_line("  topn <p> <i> <n>", "  Top-N by capture group"),
+        key_line("  unique <p> <i>", "  Distinct values of group"),
+        key_line("  numstats <p> <i>", "  Numeric stats (min/max/avg)"),
+        key_line("  linestats    ", "  Line-length statistics"),
+        Line::from(""),
+        section("Edit"),
+        key_line("  a            ", "  Append file to repo"),
+        key_line("  I            ", "  Insert line after cursor"),
+        key_line("  M            ", "  Modify current line"),
+        Line::from(""),
+        section("Tags"),
+        key_line("  t            ", "  Toggle tag manager popup"),
+        key_line("  T            ", "  Clear active tag scope"),
+        Line::from(""),
+        section("Views"),
+        key_line("  l            ", "  Log view"),
+        key_line("  h            ", "  History tree"),
+        key_line("  r            ", "  Repo list"),
+        key_line("  s            ", "  Stats / analytics"),
+        key_line("  i            ", "  Import file (browser)"),
+        key_line("  e            ", "  Export current state"),
+        key_line("  H            ", "  Return to HEAD from history view"),
+        Line::from(""),
+        section("Commands"),
+        key_line("  :f <pat>     ", "  Filter keep"),
+        key_line("  :fr <pat>    ", "  Filter remove"),
+        key_line("  :r /pat/repl/", "  Replace"),
+        key_line("  :w <path>    ", "  Export to file"),
+        key_line("  :d <idx>...  ", "  Delete lines"),
+        key_line("  :i <N> <txt> ", "  Insert line after N"),
+        key_line("  :m <N> <txt> ", "  Modify line N"),
+        key_line("  :append <p>  ", "  Append file"),
+        key_line("  :repo <name> ", "  Switch repo"),
+        key_line("  :branch <n>  ", "  Create branch"),
+        key_line("  :checkout <b>", "  Switch branch"),
+        key_line("  :branches    ", "  List branches"),
+        key_line("  :filters     ", "  List saved filters"),
+        Line::from(""),
+        section("Other"),
+        key_line("  ?            ", "  This help"),
+        key_line("  q / Ctrl+C   ", "  Quit"),
+    ]
+}
+
+fn build_history_help() -> Vec<Line<'static>> {
+    vec![
+        Line::from(Span::styled(" HISTORY VIEW KEYBINDINGS ", Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD))),
+        Line::from(""),
+        section("Navigation"),
+        key_line("  j/k ↑/↓     ", "  Move cursor up/down"),
+        key_line("  gg / G      ", "  Go to first/last node"),
+        key_line("  Enter       ", "  View (checkout) selected node"),
+        Line::from(""),
+        section("Selection & Merge"),
+        key_line("  Space       ", "  Mark node for multi-select merge"),
+        key_line("  m           ", "  Merge marked nodes (OR union)"),
+        Line::from(""),
+        section("Diff & Subtract"),
+        key_line("  d           ", "  Set diff base; press again to subtract"),
+        Line::from(""),
+        section("Copy & Paste"),
+        key_line("  y           ", "  Yank (copy) node operation"),
+        key_line("  p           ", "  Paste yanked operation at cursor"),
+        key_line("  R           ", "  Replay node operation at cursor"),
+        Line::from(""),
+        section("Undo & Delete"),
+        key_line("  u           ", "  Undo last operation"),
+        key_line("  D           ", "  Soft-delete node"),
+        Line::from(""),
+        section("Views"),
+        key_line("  l           ", "  Return to log view"),
+        key_line("  H           ", "  Return to HEAD"),
+        Line::from(""),
+        section("Other"),
+        key_line("  ?           ", "  This help"),
+        key_line("  q / Ctrl+C  ", "  Quit"),
+    ]
+}
+
+fn build_repo_list_help() -> Vec<Line<'static>> {
+    vec![
+        Line::from(Span::styled(" REPO LIST KEYBINDINGS ", Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD))),
+        Line::from(""),
+        section("Navigation"),
+        key_line("  j/k ↑/↓     ", "  Move cursor up/down"),
+        Line::from(""),
+        section("Repo Operations"),
+        key_line("  Enter       ", "  Open selected repo"),
+        key_line("  i           ", "  Import new file into a repo"),
+        key_line("  c           ", "  Clone existing repo"),
+        key_line("  d           ", "  Delete selected repo"),
+        Line::from(""),
+        section("Views"),
+        key_line("  l           ", "  Return to log view"),
+        Line::from(""),
+        section("Other"),
+        key_line("  ?           ", "  This help"),
+        key_line("  q / Ctrl+C  ", "  Quit"),
+    ]
+}
+
+fn build_analytics_help() -> Vec<Line<'static>> {
+    vec![
+        Line::from(Span::styled(" ANALYTICS KEYBINDINGS ", Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD))),
+        Line::from(""),
+        section("Navigation"),
+        key_line("  j/k ↑/↓     ", "  Scroll stats panel"),
+        Line::from(""),
+        section("Views"),
+        key_line("  l           ", "  Log view"),
+        key_line("  h           ", "  History tree"),
+        key_line("  r           ", "  Repo list"),
+        Line::from(""),
+        section("Other"),
+        key_line("  ?           ", "  This help"),
+        key_line("  q / Ctrl+C  ", "  Quit"),
+    ]
+}
+
+fn build_tag_manager_help() -> Vec<Line<'static>> {
+    vec![
+        Line::from(Span::styled(" TAG MANAGER KEYBINDINGS ", Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD))),
+        Line::from(""),
+        section("Navigation"),
+        key_line("  j/k ↑/↓     ", "  Move cursor up/down"),
+        Line::from(""),
+        section("Tag Operations"),
+        key_line("  Enter       ", "  Activate selected tag as scope"),
+        key_line("  r           ", "  Rename selected tag"),
+        key_line("  d           ", "  Delete selected tag"),
+        Line::from(""),
+        section("Other"),
+        key_line("  q / Esc     ", "  Close tag manager"),
+        key_line("  ?           ", "  This help"),
+    ]
 }
 
 fn render_collect_detail(f: &mut Frame, area: Rect, app: &App) {
@@ -699,6 +867,161 @@ fn render_collect_detail(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Collect Result ")
+        .style(Style::default().bg(Color::Rgb(20, 20, 30)));
+    let p = Paragraph::new(lines).block(block);
+    f.render_widget(p, overlay_area);
+}
+
+fn render_tag_manager(f: &mut Frame, area: Rect, app: &App) {
+    let tags = app.tag_store.get_tags(&app.repo_name);
+    if tags.is_empty() {
+        // Show a small popup indicating no tags
+        let overlay_w = 40u16.min(area.width.saturating_sub(4));
+        let overlay_h = 6u16.min(area.height.saturating_sub(4));
+        let overlay_area = Rect {
+            x: (area.width.saturating_sub(overlay_w)) / 2,
+            y: (area.height.saturating_sub(overlay_h)) / 2,
+            width: overlay_w,
+            height: overlay_h,
+        };
+        f.render_widget(Clear, overlay_area);
+        let lines = vec![
+            Line::from(Span::styled("No tags created yet.", Style::default().fg(COLOR_DIM))),
+            Line::from(""),
+            Line::from(Span::styled("Tags are ranges you create via commands.", Style::default().fg(COLOR_DIM))),
+            Line::from(Span::styled("See help (?) for tag operations.", Style::default().fg(COLOR_DIM))),
+            Line::from(Span::styled(" q/Esc to close", Style::default().fg(COLOR_DIM).add_modifier(Modifier::ITALIC))),
+        ];
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Tag Manager ")
+            .style(Style::default().bg(Color::Rgb(20, 20, 30)));
+        let p = Paragraph::new(lines).block(block);
+        f.render_widget(p, overlay_area);
+        return;
+    }
+
+    // Sort tags by start line
+    let mut sorted_tags: Vec<&lograph::tag::Tag> = tags.iter().collect();
+    sorted_tags.sort_by_key(|t| t.ranges.first().map(|&(s, _)| s).unwrap_or(0));
+
+    let tag_count = sorted_tags.len();
+    // Calculate popup size
+    let max_tag_width = sorted_tags.iter()
+        .map(|t| t.name.len() + 12) // name + "lines X-Y" overhead
+        .max()
+        .unwrap_or(30)
+        .max(30) as u16;
+    let overlay_w = (max_tag_width + 4).min(area.width.saturating_sub(4)).max(40);
+    let overlay_h = (tag_count as u16 + 5).min(area.height.saturating_sub(4)).max(8);
+
+    let overlay_area = Rect {
+        x: (area.width.saturating_sub(overlay_w)) / 2,
+        y: (area.height.saturating_sub(overlay_h)) / 2,
+        width: overlay_w,
+        height: overlay_h,
+    };
+
+    f.render_widget(Clear, overlay_area);
+
+    // Read repo lines for content preview
+    let tag_previews: Vec<String> = sorted_tags.iter().map(|tag| {
+        if let Some(&(s, _)) = tag.ranges.first() {
+            let repo_ref = app.repo.borrow();
+            if let Some(ref r) = *repo_ref {
+                if r.history_tree().is_empty() {
+                    r.read_original_lines(s, 1).ok()
+                        .and_then(|v| v.into_iter().next())
+                        .unwrap_or_else(|| String::from("..."))
+                } else {
+                    // Can't call mutable method here; use viewport lines if available
+                    let viewport_start = app.scroll_offset;
+                    let viewport_end = viewport_start + app.viewport_lines.len();
+                    if s >= viewport_start && s < viewport_end {
+                        app.viewport_lines.get(s - viewport_start).cloned().unwrap_or_else(|| String::from("..."))
+                    } else {
+                        String::from("(scroll to view)")
+                    }
+                }
+            } else {
+                String::from("...")
+            }
+        } else {
+            String::from("...")
+        }
+    }).collect();
+
+    let visible_height = (overlay_h.saturating_sub(3)) as usize;
+    let scroll_start = app.tag_manager_scroll.min(
+        tag_count.saturating_sub(visible_height)
+    );
+    let scroll_end = (scroll_start + visible_height).min(tag_count);
+
+    let mut lines: Vec<Line> = Vec::new();
+    for i in scroll_start..scroll_end {
+        let tag = sorted_tags[i];
+        let is_selected = i == app.tag_manager_cursor;
+
+        let range_str = if let Some(&(s, e)) = tag.ranges.first() {
+            if tag.ranges.len() > 1 {
+                format!("lines {}-{} (+{} more)", s + 1, e + 1, tag.ranges.len() - 1)
+            } else {
+                format!("lines {}-{}", s + 1, e + 1)
+            }
+        } else {
+            String::from("(empty)")
+        };
+
+        let cursor_mark = if is_selected {
+            if app.ascii_only { "> " } else { "▸ " }
+        } else {
+            "  "
+        };
+
+        let name_style = if is_selected {
+            Style::default().fg(Color::Black).bg(COLOR_ACCENT).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)
+        };
+        let range_style = if is_selected {
+            Style::default().fg(Color::Black).bg(COLOR_ACCENT)
+        } else {
+            Style::default().fg(COLOR_DIM)
+        };
+        let preview_style = if is_selected {
+            Style::default().fg(Color::Black).bg(COLOR_ACCENT)
+        } else {
+            Style::default().fg(COLOR_DIM)
+        };
+
+        let name_text = format!("{}{:<20}", cursor_mark, tag.name);
+        let range_text = format!(" {}", range_str);
+
+        lines.push(Line::from(vec![
+            Span::styled(name_text, name_style),
+            Span::styled(range_text, range_style),
+        ]));
+
+        // Content preview
+        let preview = &tag_previews[i];
+        let preview_chars: Vec<char> = preview.chars().collect();
+        let h_scroll = app.tag_manager_h_scroll.min(preview_chars.len());
+        let preview_visible: String = preview_chars[h_scroll..].iter().take(overlay_w as usize - 4).collect();
+        lines.push(Line::from(Span::styled(
+            format!("  └ {}", preview_visible),
+            preview_style,
+        )));
+    }
+
+    // Bottom hints
+    lines.push(Line::from(Span::styled(
+        " j/k:nav Enter:jump d:del r:rename y:copy ←/→:hscroll q:close",
+        Style::default().fg(COLOR_DIM).add_modifier(Modifier::ITALIC),
+    )));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" Tag Manager ({}) ", tag_count))
         .style(Style::default().bg(Color::Rgb(20, 20, 30)));
     let p = Paragraph::new(lines).block(block);
     f.render_widget(p, overlay_area);

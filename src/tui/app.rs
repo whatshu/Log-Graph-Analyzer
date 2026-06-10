@@ -8,7 +8,7 @@ use lograph::engine::{CollectResult, Collector};
 use lograph::error::Result;
 use lograph::operator::Operation;
 use lograph::repo::{LogRepo, Workspace};
-use lograph::tag::{TagScopeRef, TagStore};
+use lograph::tag::TagStore;
 
 use std::path::PathBuf;
 
@@ -23,7 +23,6 @@ pub enum ViewKind {
     History,
     FileBrowser,
     Help,
-    TagManager,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,8 +32,6 @@ pub enum InputMode {
     Search,
     Input,
     FileBrowser,
-    VisualSelect,
-    TagRename,
 }
 
 #[derive(Debug)]
@@ -132,14 +129,18 @@ pub struct App {
 
     /// Tag store (loaded from disk)
     pub tag_store: TagStore,
-    /// Currently active tag scope
-    pub active_tag_scope: Option<TagScopeRef>,
-    /// Visual selection start line
-    pub visual_select_start: Option<usize>,
-    /// Whether visual selection is active
-    pub visual_select_active: bool,
-    /// Cursor position in tag manager view
-    pub tag_cursor: usize,
+    /// Tag manager popup
+    pub show_tag_manager: bool,
+    pub tag_manager_cursor: usize,
+    pub tag_manager_scroll: usize,
+    pub tag_manager_h_scroll: usize,
+    pub pending_tag_rename: Option<String>,
+
+    // ── Search tag range ──
+    pub search_tag_start: Option<String>,
+    pub search_tag_end: Option<String>,
+    pub picking_search_tag: bool,
+    pub search_tag_pick_cursor: usize,
 
     pub pending_op: PendingOp,
 }
@@ -168,6 +169,10 @@ pub struct HistoryNode {
     /// Tag scope name if this node was created with a tag scope.
     #[allow(dead_code)]
     pub tag_name: Option<String>,
+    /// Whether this node is the last child of its parent.
+    pub is_last_child: bool,
+    /// Number of siblings (children of parent). 1 = only child, >1 = fork.
+    pub sibling_count: usize,
 }
 
 /// Detect whether the terminal locale supports UTF-8 rendering.
@@ -249,10 +254,15 @@ impl App {
             yanked_node_id: None,
             diff_base_node_id: None,
             tag_store: TagStore::load(workspace_root),
-            active_tag_scope: None,
-            visual_select_start: None,
-            visual_select_active: false,
-            tag_cursor: 0,
+            show_tag_manager: false,
+            tag_manager_cursor: 0,
+            tag_manager_scroll: 0,
+            tag_manager_h_scroll: 0,
+            pending_tag_rename: None,
+            search_tag_start: None,
+            search_tag_end: None,
+            picking_search_tag: false,
+            search_tag_pick_cursor: 0,
             pending_op: PendingOp::None,
         };
 
@@ -421,7 +431,13 @@ impl App {
                 let is_viewed = viewed_id == Some(entry.node_id);
 
                 // Build tree connector
-                let connector = build_connector(entry.depth, &entry.ancestors, entry.has_children, self.ascii_only);
+                let connector = build_connector(
+                    entry.depth,
+                    &entry.ancestors,
+                    entry.sibling_count,
+                    entry.is_last_child,
+                    self.ascii_only,
+                );
 
                 let collect_summary = self.collect_results.get(&entry.node_id).cloned();
 
@@ -445,6 +461,8 @@ impl App {
                     collect_summary,
                     deleted: entry.deleted,
                     tag_name: entry.tag_name.clone(),
+                    is_last_child: entry.is_last_child,
+                    sibling_count: entry.sibling_count,
                 });
             }
         }
@@ -580,6 +598,76 @@ impl App {
         self.pending_op = PendingOp::ExportFrom(node_idx, path);
     }
 
+    // ── Tag remapping ──
+
+    /// Remap tag ranges after a non-destructive operation.
+    /// `old_lines` is the pre-operation line set.
+    fn remap_tags_after_operation(&mut self, op: &Operation, old_lines: &[String]) {
+        let tags = self.tag_store.get_tags(&self.repo_name).to_vec();
+        if tags.is_empty() {
+            return;
+        }
+
+        let new_tags = match op {
+            Operation::Filter { pattern, keep } => {
+                if let Ok(re) = regex::Regex::new(pattern) {
+                    // Build old→new line mapping
+                    let mut mapping: Vec<Option<usize>> = vec![None; old_lines.len()];
+                    let mut new_idx = 0usize;
+                    for (old_idx, line) in old_lines.iter().enumerate() {
+                        let survives = if *keep { re.is_match(line) } else { !re.is_match(line) };
+                        if survives {
+                            mapping[old_idx] = Some(new_idx);
+                            new_idx += 1;
+                        }
+                    }
+                    remap_tag_ranges(&tags, &mapping)
+                } else {
+                    tags.clone()
+                }
+            }
+            Operation::DeleteLines { line_indices } => {
+                let removed: HashSet<usize> = line_indices.iter().copied().collect();
+                let mut mapping: Vec<Option<usize>> = vec![None; old_lines.len()];
+                let mut new_idx = 0usize;
+                for old_idx in 0..old_lines.len() {
+                    if !removed.contains(&old_idx) {
+                        mapping[old_idx] = Some(new_idx);
+                        new_idx += 1;
+                    }
+                }
+                remap_tag_ranges(&tags, &mapping)
+            }
+            Operation::InsertLines { after_line, content } => {
+                let offset = content.len();
+                tags.iter().map(|tag| {
+                    let new_ranges = tag.ranges.iter().map(|&(s, e)| {
+                        if s > *after_line {
+                            (s + offset, e + offset)
+                        } else if e > *after_line {
+                            (s, e + offset)
+                        } else {
+                            (s, e)
+                        }
+                    }).collect();
+                    lograph::tag::Tag {
+                        ranges: new_ranges,
+                        ..tag.clone()
+                    }
+                }).collect()
+            }
+            Operation::Replace { .. } | Operation::ModifyLine { .. } => {
+                tags.clone() // no line count change
+            }
+            _ => tags.clone(),
+        };
+
+        if !new_tags.is_empty() {
+            self.tag_store.repos.insert(self.repo_name.clone(), new_tags);
+        }
+        let _ = self.tag_store.save(&self.workspace.root());
+    }
+
     pub fn apply_pending(&mut self) {
         let pending = std::mem::replace(&mut self.pending_op, PendingOp::None);
         match pending {
@@ -588,10 +676,24 @@ impl App {
             PendingOp::ApplyOperation(op) => {
                 let desc = op.describe();
                 let is_collect = matches!(op, Operation::Collect { .. });
-                let scope = self.active_tag_scope.clone();
+
+                // Snapshot old lines for tag remapping (non-collect only)
+                let old_lines: Option<Vec<String>> = if !is_collect {
+                    let mut repo_mut = self.repo.borrow_mut();
+                    repo_mut.as_mut().and_then(|r| {
+                        if r.history_tree().is_empty() {
+                            r.read_all_original_lines().ok()
+                        } else {
+                            r.get_current_lines().ok()
+                        }
+                    })
+                } else {
+                    None
+                };
+
                 let mut repo_mut = self.repo.borrow_mut();
                 if let Some(ref mut r) = *repo_mut {
-                    match r.apply_operation_scoped(op, scope) {
+                    match r.apply_operation(op.clone()) {
                         Ok(()) => {
                             self.status_message = format!("Applied: {}", desc);
                             self.line_count_is_original = false;
@@ -602,6 +704,9 @@ impl App {
                                     let new_head = r.head_node_id();
                                     self.collect_results.insert(new_head, summary);
                                 }
+                                // Clear all tags on destructive collect
+                                self.tag_store.repos.remove(&self.repo_name);
+                                let _ = self.tag_store.save(&self.workspace.root());
                             }
                         }
                         Err(e) => {
@@ -611,11 +716,21 @@ impl App {
                     }
                 }
                 drop(repo_mut);
+
+                // Remap tags after non-collect operations
+                if !is_collect {
+                    if let Some(ref old) = old_lines {
+                        self.remap_tags_after_operation(&op, old);
+                    }
+                }
+
                 self.refresh_line_count();
                 self.load_viewport();
                 self.clear_search();
             }
             PendingOp::Undo => {
+                // Snapshot tags before undo so we can restore them after
+                let tags_before = self.tag_store.get_tags(&self.repo_name).to_vec();
                 let mut repo_mut = self.repo.borrow_mut();
                 if let Some(ref mut r) = *repo_mut {
                     match r.undo() {
@@ -633,6 +748,11 @@ impl App {
                     }
                 }
                 drop(repo_mut);
+                // Restore tags (best-effort: ranges may have shifted, but we keep the tags)
+                if !tags_before.is_empty() {
+                    self.tag_store.repos.insert(self.repo_name.clone(), tags_before);
+                    let _ = self.tag_store.save(&self.workspace.root());
+                }
                 self.refresh_line_count();
                 self.load_viewport();
                 self.clear_search();
@@ -735,6 +855,9 @@ impl App {
                                     let new_head = r.head_node_id();
                                     self.collect_results.insert(new_head, summary);
                                 }
+                                // Clear all tags on destructive collect
+                                self.tag_store.repos.remove(&self.repo_name);
+                                let _ = self.tag_store.save(&self.workspace.root());
                             }
                         }
                         Err(e) => {
@@ -1120,13 +1243,22 @@ impl App {
 
 /// Build a tree connector string like git log --graph.
 /// ancestors: list of ancestor node_ids that have more children after the current one.
+/// sibling_count: number of children the parent node has. 1 = only child (linear), >1 = fork.
+/// is_last_child: whether this is the last child of its parent.
 /// When `ascii_only` is true, uses ASCII characters (|, `--, `--) instead of
 /// Unicode box-drawing (│, ├─, └─) for terminals that don't support UTF-8.
-fn build_connector(depth: usize, ancestors: &[usize], has_children: bool, ascii_only: bool) -> String {
+fn build_connector(
+    depth: usize,
+    ancestors: &[usize],
+    sibling_count: usize,
+    is_last_child: bool,
+    ascii_only: bool,
+) -> String {
     if depth == 0 {
         return String::new();
     }
     let mut s = String::with_capacity(depth * 2);
+    // Draw vertical lines for ancestor levels that still have children to show.
     for d in 0..depth - 1 {
         let has_continuing = ancestors.len() > d;
         if has_continuing {
@@ -1139,21 +1271,79 @@ fn build_connector(depth: usize, ancestors: &[usize], has_children: bool, ascii_
             s.push_str("  ");
         }
     }
-    // Last level
-    if has_children {
-        if ascii_only {
-            s.push_str("|-");
+    // Last level: only show fork markers (├─/└─) when the parent actually
+    // has multiple children (a real fork point). Linear nodes get plain indent.
+    if sibling_count > 1 {
+        if is_last_child {
+            if ascii_only {
+                s.push_str("`-");
+            } else {
+                s.push_str("└─");
+            }
         } else {
-            s.push_str("├─");
+            if ascii_only {
+                s.push_str("|-");
+            } else {
+                s.push_str("├─");
+            }
         }
     } else {
-        if ascii_only {
-            s.push_str("`-");
-        } else {
-            s.push_str("└─");
-        }
+        // Only child: no fork marker, just indent.
+        s.push_str("  ");
     }
     s
+}
+
+/// Given an old→new line mapping (None = removed), compute new tag ranges.
+/// Consecutive surviving positions are coalesced into ranges.
+fn remap_tag_ranges(
+    tags: &[lograph::tag::Tag],
+    mapping: &[Option<usize>],
+) -> Vec<lograph::tag::Tag> {
+    tags.iter().map(|tag| {
+        let mut new_ranges = Vec::new();
+        for &(s, e) in &tag.ranges {
+            let mut range_start: Option<usize> = None;
+            let end_idx = e.min(mapping.len().saturating_sub(1));
+            for old_idx in s..=end_idx {
+                if let Some(new_pos) = mapping[old_idx] {
+                    if range_start.is_none() {
+                        range_start = Some(new_pos);
+                    }
+                } else if let Some(start) = range_start.take() {
+                    if old_idx > 0 {
+                        if let Some(last_pos) = mapping[old_idx - 1] {
+                            new_ranges.push((start, last_pos));
+                        }
+                    }
+                }
+            }
+            // Close final range
+            if let Some(start) = range_start {
+                if s <= mapping.len().saturating_sub(1) {
+                    if let Some(last_pos) = mapping[end_idx] {
+                        new_ranges.push((start, last_pos));
+                    }
+                }
+            }
+        }
+        // Merge overlapping/adjacent ranges
+        new_ranges.sort_by_key(|&(s, _)| s);
+        let mut merged: Vec<(usize, usize)> = Vec::new();
+        for (s, e) in new_ranges {
+            if let Some((_, last_e)) = merged.last_mut() {
+                if s <= *last_e + 1 {
+                    *last_e = (*last_e).max(e);
+                    continue;
+                }
+            }
+            merged.push((s, e));
+        }
+        lograph::tag::Tag {
+            ranges: merged,
+            ..tag.clone()
+        }
+    }).collect()
 }
 
 fn set_tmux_title(title: &str) {
@@ -2043,5 +2233,237 @@ mod tests {
         // Search should be cleared
         assert!(app.search_query.is_empty());
         assert!(app.search_results.is_empty());
+    }
+
+    // ── Tag system tests ──
+
+    #[test]
+    fn test_create_tag_via_store() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        let tag = lograph::tag::Tag {
+            name: "test-tag".into(),
+            ranges: vec![(10, 20)],
+            created_at: chrono::Utc::now(),
+        };
+        app.tag_store.add_tag(&app.repo_name, tag);
+        let _ = app.tag_store.save(&app.workspace.root());
+
+        let tags = app.tag_store.get_tags(&app.repo_name);
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0].name, "test-tag");
+        assert_eq!(tags[0].ranges, vec![(10, 20)]);
+    }
+
+    #[test]
+    fn test_tag_rename() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        let tag = lograph::tag::Tag {
+            name: "old".into(),
+            ranges: vec![(5, 10)],
+            created_at: chrono::Utc::now(),
+        };
+        app.tag_store.add_tag(&app.repo_name, tag);
+        app.tag_store.rename_tag(&app.repo_name, "old", "new");
+        let _ = app.tag_store.save(&app.workspace.root());
+
+        let tags = app.tag_store.get_tags(&app.repo_name);
+        assert_eq!(tags[0].name, "new");
+    }
+
+    #[test]
+    fn test_tag_delete() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        app.tag_store.add_tag(&app.repo_name, lograph::tag::Tag {
+            name: "del-me".into(),
+            ranges: vec![(1, 3)],
+            created_at: chrono::Utc::now(),
+        });
+        assert_eq!(app.tag_store.get_tags(&app.repo_name).len(), 1);
+
+        app.tag_store.remove_tag(&app.repo_name, "del-me");
+        assert_eq!(app.tag_store.get_tags(&app.repo_name).len(), 0);
+    }
+
+    #[test]
+    fn test_tag_remap_after_filter_keep() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        // Create a tag at lines 0-10
+        app.tag_store.add_tag(&app.repo_name, lograph::tag::Tag {
+            name: "top".into(),
+            ranges: vec![(0, 10)],
+            created_at: chrono::Utc::now(),
+        });
+
+        // Filter keep ERROR (every 4th line: 2, 6, 10 → 3 lines in 0-10)
+        app.queue_operation(Operation::Filter {
+            pattern: "ERROR".to_string(),
+            keep: true,
+        });
+        app.apply_pending();
+
+        // Tag should survive with remapped ranges
+        let tags = app.tag_store.get_tags(&app.repo_name);
+        assert!(!tags.is_empty(), "Tag should survive filter keep");
+        let tag = &tags[0];
+        assert_eq!(tag.name, "top");
+        // Only lines 2, 6, 10 matching ERROR within old [0,10] survive
+        // After filter, they become lines 0, 1, 2 (since they're the first 3 ERROR lines)
+        assert!(!tag.ranges.is_empty(), "Tag should have ranges after remap");
+    }
+
+    #[test]
+    fn test_tag_remap_after_filter_remove() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        // Create a tag at lines 0-10
+        app.tag_store.add_tag(&app.repo_name, lograph::tag::Tag {
+            name: "top".into(),
+            ranges: vec![(0, 10)],
+            created_at: chrono::Utc::now(),
+        });
+
+        // Filter remove ERROR
+        app.queue_operation(Operation::Filter {
+            pattern: "ERROR".to_string(),
+            keep: false,
+        });
+        app.apply_pending();
+
+        // Tag should survive with remapped ranges
+        let tags = app.tag_store.get_tags(&app.repo_name);
+        assert!(!tags.is_empty(), "Tag should survive filter remove");
+    }
+
+    #[test]
+    fn test_tags_cleared_after_collect() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        // Create a tag
+        app.tag_store.add_tag(&app.repo_name, lograph::tag::Tag {
+            name: "will-die".into(),
+            ranges: vec![(0, 50)],
+            created_at: chrono::Utc::now(),
+        });
+        assert!(!app.tag_store.get_tags(&app.repo_name).is_empty());
+
+        // Run collect
+        app.run_collect(Collector::Count { pattern: None });
+        app.apply_pending();
+
+        // Tags should be cleared
+        assert!(app.tag_store.get_tags(&app.repo_name).is_empty());
+    }
+
+    #[test]
+    fn test_tag_remap_after_delete_lines() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        // Create tag at lines 10-20
+        app.tag_store.add_tag(&app.repo_name, lograph::tag::Tag {
+            name: "middle".into(),
+            ranges: vec![(10, 20)],
+            created_at: chrono::Utc::now(),
+        });
+
+        // Delete lines 0-5 (6 lines)
+        app.queue_operation(Operation::DeleteLines {
+            line_indices: (0..=5).collect(),
+        });
+        app.apply_pending();
+
+        // Tag range should shift up by 6
+        let tags = app.tag_store.get_tags(&app.repo_name);
+        assert!(!tags.is_empty());
+        let tag = &tags[0];
+        assert_eq!(tag.ranges[0], (4, 14), "Range should shift up by 6 after deleting lines 0-5");
+    }
+
+    #[test]
+    fn test_tag_remap_after_insert_lines() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        // Create tag at lines 10-20
+        app.tag_store.add_tag(&app.repo_name, lograph::tag::Tag {
+            name: "middle".into(),
+            ranges: vec![(10, 20)],
+            created_at: chrono::Utc::now(),
+        });
+
+        // Insert 3 lines after line 5
+        app.queue_operation(Operation::InsertLines {
+            after_line: 5,
+            content: vec!["a".into(), "b".into(), "c".into()],
+        });
+        app.apply_pending();
+
+        // Tag range should shift down by 3
+        let tags = app.tag_store.get_tags(&app.repo_name);
+        assert!(!tags.is_empty());
+        let tag = &tags[0];
+        assert_eq!(tag.ranges[0], (13, 23), "Range should shift down by 3 after inserting 3 lines after line 5");
+    }
+
+    #[test]
+    fn test_tag_copy_duplicates_with_new_name() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        app.tag_store.add_tag(&app.repo_name, lograph::tag::Tag {
+            name: "original".into(),
+            ranges: vec![(5, 15)],
+            created_at: chrono::Utc::now(),
+        });
+
+        // Simulate copy (y key in tag manager)
+        let tags = app.tag_store.get_tags(&app.repo_name).to_vec();
+        let tag = &tags[0];
+        let new_name = app.tag_store.next_auto_name(&app.repo_name);
+        app.tag_store.add_tag(&app.repo_name, lograph::tag::Tag {
+            name: new_name,
+            ranges: tag.ranges.clone(),
+            created_at: chrono::Utc::now(),
+        });
+
+        let tags = app.tag_store.get_tags(&app.repo_name);
+        assert_eq!(tags.len(), 2);
+        // New tag should have tag_N name
+        assert!(tags.iter().any(|t| t.name.starts_with("tag_")));
+        assert!(tags.iter().any(|t| t.name == "original"));
+    }
+
+    #[test]
+    fn test_tag_replace_preserves_ranges() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = setup_app(&tmp);
+
+        // Create tag
+        app.tag_store.add_tag(&app.repo_name, lograph::tag::Tag {
+            name: "keep-me".into(),
+            ranges: vec![(10, 20)],
+            created_at: chrono::Utc::now(),
+        });
+
+        // Replace (doesn't change line count)
+        app.queue_operation(Operation::Replace {
+            pattern: "ERROR".to_string(),
+            replacement: "OK".to_string(),
+        });
+        app.apply_pending();
+
+        let tags = app.tag_store.get_tags(&app.repo_name);
+        assert!(!tags.is_empty());
+        assert_eq!(tags[0].ranges, vec![(10, 20)], "Replace should preserve tag ranges");
     }
 }
