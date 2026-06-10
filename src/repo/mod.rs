@@ -770,7 +770,71 @@ impl LogRepo {
     /// children are reparented to its parent. Branch pointers are updated.
     ///
     /// The root node cannot be deleted.
-    pub fn soft_delete_node(&mut self, node_id: usize) -> Result<()> {
+    /// Soft-delete a history node. Cascades to Merge/Subtract/Replay nodes
+    /// that depend on the deleted node, plus all of their descendants.
+    ///
+    /// Returns the total number of nodes deleted (including cascade).
+    pub fn soft_delete_node(&mut self, node_id: usize) -> Result<usize> {
+        use std::collections::HashSet;
+
+        // ── Cascade detection ──
+        // Find all Merge/Subtract/Replay nodes that depend on the deleted
+        // node (or on any node that itself depends on it, recursively),
+        // plus all descendants of those nodes.
+        let mut cascade_ids: Vec<usize> = Vec::new();
+        let mut queue: Vec<usize> = vec![node_id];
+        let mut visited: HashSet<usize> = HashSet::new();
+        visited.insert(node_id);
+
+        while let Some(current) = queue.pop() {
+            for node in &self.history.nodes {
+                if visited.contains(&node.id) || node.deleted {
+                    continue;
+                }
+                if let Some(ref op) = node.operation {
+                    let depends = match op {
+                        Operation::Merge { sources, .. } => {
+                            sources.contains(&current)
+                        }
+                        Operation::Subtract { base, subtrahend } => {
+                            *base == current || *subtrahend == current
+                        }
+                        Operation::Replay { source_node_id } => {
+                            *source_node_id == current
+                        }
+                        _ => false,
+                    };
+                    if depends {
+                        // Collect this node and all of its descendants.
+                        let desc = self.history.descendants(node.id);
+                        for d in desc {
+                            if visited.insert(d) {
+                                queue.push(d);
+                                cascade_ids.push(d);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let cascade_count = cascade_ids.len();
+
+        // Delete cascade nodes in reverse depth order (deepest first),
+        // so branches are moved upward level by level.
+        cascade_ids.sort_by(|a, b| {
+            let a_depth = self.history.path_to(*a).len();
+            let b_depth = self.history.path_to(*b).len();
+            b_depth.cmp(&a_depth)
+        });
+
+        for &nid in &cascade_ids {
+            self.history
+                .soft_delete(nid)
+                .map_err(|msg| LogAnalyzerError::Repo(msg))?;
+        }
+
+        // Delete the original node last.
         self.history
             .soft_delete(node_id)
             .map_err(|msg| LogAnalyzerError::Repo(msg))?;
@@ -778,7 +842,7 @@ impl LogRepo {
         // Invalidate cache since tree structure changed
         self.current_lines = None;
         self.save_history()?;
-        Ok(())
+        Ok(1 + cascade_count)
     }
 
     /// Filter lines to only those within the given tag scope ranges.

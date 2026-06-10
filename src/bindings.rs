@@ -308,9 +308,10 @@ impl PyLogRepo {
             .replay_node_at(source_node_id, target_parent_id, branch_name)?)
     }
 
-    /// Soft-delete a history node. The node is marked deleted but kept
-    /// in the tree for reference.
-    fn soft_delete_node(&mut self, node_id: usize) -> PyResult<()> {
+    /// Soft-delete a history node. Cascades to dependent Merge/Subtract/Replay
+    /// nodes and their descendants.
+    /// Returns the number of nodes deleted (including cascade).
+    fn soft_delete_node(&mut self, node_id: usize) -> PyResult<usize> {
         Ok(self.inner.soft_delete_node(node_id)?)
     }
 

@@ -1012,11 +1012,18 @@ impl App {
                 let mut repo_mut = self.repo.borrow_mut();
                 if let Some(ref mut r) = *repo_mut {
                     match r.soft_delete_node(node_id) {
-                        Ok(()) => {
-                            self.status_message = format!(
-                                "Soft-deleted node {} (pattern preserved in history)",
-                                node_id
-                            );
+                        Ok(count) => {
+                            if count == 1 {
+                                self.status_message = format!(
+                                    "Soft-deleted node {}",
+                                    node_id
+                                );
+                            } else {
+                                self.status_message = format!(
+                                    "Soft-deleted node {} and {} cascade node(s)",
+                                    node_id, count - 1
+                                );
+                            }
                         }
                         Err(e) => {
                             self.error_message =

@@ -1498,6 +1498,256 @@ fn test_soft_delete_root_fails() {
     assert!(result.unwrap_err().to_string().contains("root"));
 }
 
+// ── Soft delete cascades to dependent merge nodes ──
+
+#[test]
+fn test_soft_delete_cascades_to_merge_node() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path().join("repo");
+
+    let data = b"ERROR auth\nWARN memory\nERROR disk\n";
+    let mut repo = LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
+
+    // Node 1: keep ERROR
+    repo.apply_operation(Operation::Filter {
+        pattern: "ERROR".to_string(),
+        keep: true,
+    })
+    .unwrap();
+    repo.undo().unwrap();
+
+    // Node 2: keep WARN
+    repo.apply_operation_from(0, "warn", Operation::Filter {
+        pattern: "WARN".to_string(),
+        keep: true,
+    })
+    .unwrap();
+
+    // Merge node 1 and node 2 → creates node 3
+    let merge_id = repo.merge_nodes(&[1, 2], "merged", MergeMode::Union).unwrap();
+    assert_eq!(merge_id, 3);
+
+    // Delete node 1 → should cascade-delete merge node 3
+    let count = repo.soft_delete_node(1).unwrap();
+    assert_eq!(count, 2, "should delete node 1 + merge node 3 = 2 nodes");
+
+    let n1 = repo.history_tree().get_node(1).unwrap();
+    assert!(n1.deleted);
+    let n3 = repo.history_tree().get_node(3).unwrap();
+    assert!(n3.deleted, "merge node should be cascade-deleted");
+}
+
+// ── Soft delete cascades to descendants of merge node ──
+
+#[test]
+fn test_soft_delete_cascades_to_merge_descendants() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path().join("repo");
+
+    let data = b"ERROR auth\nWARN memory\nERROR disk\nINFO startup\n";
+    let mut repo = LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
+
+    // Node 1: keep ERROR
+    repo.apply_operation(Operation::Filter {
+        pattern: "ERROR".to_string(),
+        keep: true,
+    })
+    .unwrap();
+    repo.undo().unwrap();
+
+    // Node 2: keep WARN
+    repo.apply_operation_from(0, "warn", Operation::Filter {
+        pattern: "WARN".to_string(),
+        keep: true,
+    })
+    .unwrap();
+
+    // Merge node 1 and node 2 → creates node 3
+    let merge_id = repo.merge_nodes(&[1, 2], "merged", MergeMode::Union).unwrap();
+
+    // Apply a filter on top of the merge → node 4 (descendant of merge)
+    repo.apply_operation(Operation::Filter {
+        pattern: "auth".to_string(),
+        keep: true,
+    })
+    .unwrap();
+
+    // Delete node 1 → should cascade: merge node 3 + its child node 4
+    let count = repo.soft_delete_node(1).unwrap();
+    assert_eq!(count, 3, "should delete node 1 + merge 3 + child 4 = 3 nodes");
+
+    assert!(repo.history_tree().get_node(1).unwrap().deleted);
+    assert!(repo.history_tree().get_node(merge_id).unwrap().deleted);
+    assert!(repo.history_tree().get_node(4).unwrap().deleted);
+}
+
+// ── Soft delete cascades to subtract nodes ──
+
+#[test]
+fn test_soft_delete_cascades_to_subtract_node() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path().join("repo");
+
+    let data = b"ERROR auth\nWARN memory\nERROR disk\n";
+    let mut repo = LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
+
+    // Node 1: keep ERROR
+    repo.apply_operation(Operation::Filter {
+        pattern: "ERROR".to_string(),
+        keep: true,
+    })
+    .unwrap();
+    repo.undo().unwrap();
+
+    // Node 2: keep disk
+    repo.apply_operation_from(0, "disk", Operation::Filter {
+        pattern: "disk".to_string(),
+        keep: true,
+    })
+    .unwrap();
+
+    // Subtract node 2 from node 1 → creates node 3
+    let sub_id = repo.subtract_nodes(1, 2, "diff").unwrap();
+    assert_eq!(sub_id, 3);
+
+    // Delete node 1 (the base of Subtract) → cascade-delete node 3
+    let count = repo.soft_delete_node(1).unwrap();
+    assert_eq!(count, 2);
+
+    assert!(repo.history_tree().get_node(3).unwrap().deleted);
+}
+
+// ── Soft delete cascades to replay nodes ──
+
+#[test]
+fn test_soft_delete_cascades_to_replay_node() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path().join("repo");
+
+    let data = b"ERROR auth\nWARN memory\n";
+    let mut repo = LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
+
+    // Node 1: keep ERROR
+    repo.apply_operation(Operation::Filter {
+        pattern: "ERROR".to_string(),
+        keep: true,
+    })
+    .unwrap();
+
+    // Replay node 1 at root → creates node 2
+    let replay_id = repo.replay_node_at(1, 0, "replay").unwrap();
+    assert_eq!(replay_id, 2);
+
+    // Delete node 1 → cascade-delete replay node 2
+    let count = repo.soft_delete_node(1).unwrap();
+    assert_eq!(count, 2);
+
+    assert!(repo.history_tree().get_node(2).unwrap().deleted);
+}
+
+// ── Soft delete: no cascade for plain filter nodes ──
+
+#[test]
+fn test_soft_delete_no_cascade_for_plain_node() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path().join("repo");
+
+    let data = b"A\nB\nC\n";
+    let mut repo = LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
+
+    // Node 1: filter (no dependents)
+    repo.apply_operation(Operation::Filter {
+        pattern: "A".to_string(),
+        keep: true,
+    })
+    .unwrap();
+
+    let count = repo.soft_delete_node(1).unwrap();
+    assert_eq!(count, 1, "only the node itself should be deleted");
+}
+
+// ── Soft delete: multi-level cascade (merge of merge) ──
+
+#[test]
+fn test_soft_delete_cascades_multi_level() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path().join("repo");
+
+    let data = b"A\nB\nC\nD\n";
+    let mut repo = LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
+
+    // Node 1: keep A
+    repo.apply_operation(Operation::Filter {
+        pattern: "A".to_string(),
+        keep: true,
+    })
+    .unwrap();
+    repo.undo().unwrap();
+
+    // Node 2: keep B
+    repo.apply_operation_from(0, "b", Operation::Filter {
+        pattern: "B".to_string(),
+        keep: true,
+    })
+    .unwrap();
+
+    // Merge 1+2 → node 3
+    repo.merge_nodes(&[1, 2], "m1", MergeMode::Union).unwrap();
+
+    // Node 4: keep C (from root)
+    repo.checkout_branch("main").unwrap();
+    repo.apply_operation_from(0, "c", Operation::Filter {
+        pattern: "C".to_string(),
+        keep: true,
+    })
+    .unwrap();
+
+    // Merge 3+4 → node 5 (merge of a merge)
+    let merge2_id = repo.merge_nodes(&[3, 4], "m2", MergeMode::Union).unwrap();
+
+    // Delete node 1 → cascade: 3 (merge), 5 (merge of merge)
+    let count = repo.soft_delete_node(1).unwrap();
+    assert_eq!(count, 3, "node 1 + merge 3 + merge 5 = 3");
+
+    assert!(repo.history_tree().get_node(3).unwrap().deleted);
+    assert!(repo.history_tree().get_node(merge2_id).unwrap().deleted);
+}
+
+// ── Soft delete: deleting subtrahend also cascades ──
+
+#[test]
+fn test_soft_delete_cascades_subtrahend() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path().join("repo");
+
+    let data = b"ERROR auth\nWARN memory\nERROR disk\n";
+    let mut repo = LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
+
+    // Node 1: keep ERROR
+    repo.apply_operation(Operation::Filter {
+        pattern: "ERROR".to_string(),
+        keep: true,
+    })
+    .unwrap();
+    repo.undo().unwrap();
+
+    // Node 2: keep disk
+    repo.apply_operation_from(0, "disk", Operation::Filter {
+        pattern: "disk".to_string(),
+        keep: true,
+    })
+    .unwrap();
+
+    // Subtract: node 1 minus node 2 → node 3
+    let sub_id = repo.subtract_nodes(1, 2, "diff").unwrap();
+
+    // Delete node 2 (the subtrahend) → cascade-delete subtract node 3
+    let count = repo.soft_delete_node(2).unwrap();
+    assert_eq!(count, 2, "node 2 + subtract node 3");
+
+    assert!(repo.history_tree().get_node(sub_id).unwrap().deleted);
+}
+
 // ── History tree integration with tags ──
 
 #[test]
