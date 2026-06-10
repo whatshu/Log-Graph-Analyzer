@@ -13,7 +13,7 @@ use crate::engine::{collector, ChunkedProcessor, CollectResult, Collector, LineS
 use crate::error::{LogAnalyzerError, Result};
 use crate::history::HistoryTree;
 use crate::index::{IndexBuilder, LineIndex};
-use crate::operator::{InverseData, Operation, OperationRecord};
+use crate::operator::{InverseData, MergeMode, Operation, OperationRecord};
 use crate::tag::{self, TagScopeRef};
 
 /// A log repository that stores compressed log data with operation history.
@@ -307,6 +307,8 @@ impl LogRepo {
 
     /// Compute the line state at a given node in the history tree.
     /// Walks from root to the target node, applying operations along the path.
+    /// Handles Merge, Subtract, and Replay operations specially — these cannot
+    /// be applied via `op.apply()` and require computing source states.
     pub fn compute_state_at(&self, node_id: usize) -> Result<Vec<String>> {
         let path = self.history.path_to(node_id);
         if path.is_empty() {
@@ -322,7 +324,84 @@ impl LogRepo {
         for &nid in &path[1..] {
             if let Some(node) = self.history.get_node(nid) {
                 if let Some(ref op) = node.operation {
-                    lines = op.apply(lines)?;
+                    lines = match op {
+                        Operation::Merge { sources, mode } => {
+                            // `lines` at this point is the parent state,
+                            // which is the LCA of all sources. Use it as
+                            // the ordering reference so merge results
+                            // preserve relative line positions.
+                            let lca_state = lines.clone();
+                            let mut line_sets: Vec<Vec<String>> = Vec::new();
+                            for &sid in sources {
+                                line_sets.push(self.compute_state_at(sid)?);
+                            }
+                            match mode {
+                                MergeMode::Union => {
+                                    tag::merge_union_by_lca(&lca_state, &line_sets)
+                                }
+                                MergeMode::Intersection => {
+                                    tag::merge_intersection_by_lca(
+                                        &lca_state, &line_sets,
+                                    )
+                                }
+                                MergeMode::Subtract => {
+                                    let base = &line_sets[0];
+                                    let subtrahends = &line_sets[1..];
+                                    tag::merge_subtract_by_lca(
+                                        &lca_state, base, subtrahends,
+                                    )
+                                }
+                                MergeMode::Xor => {
+                                    tag::merge_xor_by_lca(&lca_state, &line_sets)
+                                }
+                            }
+                        }
+                        Operation::Subtract { base, subtrahend } => {
+                            // `lines` is the LCA of base and subtrahend.
+                            // Use LCA ordering to preserve relative positions.
+                            let lca_state = lines.clone();
+                            let base_lines =
+                                self.compute_state_at(*base)?;
+                            let sub_lines =
+                                self.compute_state_at(*subtrahend)?;
+                            tag::merge_subtract_by_lca(
+                                &lca_state,
+                                &base_lines,
+                                &[sub_lines],
+                            )
+                        }
+                        Operation::Replay { source_node_id } => {
+                            let src_node = self
+                                .history
+                                .get_node(*source_node_id)
+                                .ok_or_else(|| {
+                                    LogAnalyzerError::Repo(format!(
+                                        "Replay source node {} not found",
+                                        source_node_id
+                                    ))
+                                })?;
+                            if let Some(ref src_op) = src_node.operation {
+                                match src_op {
+                                    Operation::Merge { .. }
+                                    | Operation::Subtract { .. }
+                                    | Operation::Replay { .. } => {
+                                        return Err(LogAnalyzerError::Operator(
+                                            "Cannot replay a Merge/Subtract/Replay operation"
+                                                .into(),
+                                        ));
+                                    }
+                                    _ => {
+                                        let (new_lines, _inv) =
+                                            src_op.apply_with_inverse(lines)?;
+                                        new_lines
+                                    }
+                                }
+                            } else {
+                                lines
+                            }
+                        }
+                        _ => op.apply(lines)?,
+                    };
                 }
             }
         }
@@ -498,14 +577,20 @@ impl LogRepo {
         Ok(())
     }
 
-    /// Merge multiple source nodes: create a new node whose state is the
-    /// UNION of all line sets at each source node.
+    /// Merge multiple source nodes with a given set operation mode.
+    /// Creates a new node whose state is the result of applying the set
+    /// operation to the line sets at each source node.
+    ///
+    /// For `Subtract` mode, `sources[0]` is the base and all others are
+    /// subtracted from it. For all other modes, sources are symmetric.
     ///
     /// Lines are compared by exact string match. Returns the new node ID.
+    /// The new node is attached to the lowest common ancestor of all sources.
     pub fn merge_nodes(
         &mut self,
         sources: &[usize],
         branch_name: &str,
+        mode: MergeMode,
     ) -> Result<usize> {
         if sources.is_empty() {
             return Err(LogAnalyzerError::Operator(
@@ -513,22 +598,41 @@ impl LogRepo {
             ));
         }
 
+        // Compute the parent (LCA) first so we can use its state for ordering.
+        let parent_id = self
+            .history
+            .lowest_common_ancestor(sources)
+            .unwrap_or(0);
+        let lca_lines = self.compute_state_at(parent_id)?;
+
+        // Compute source states.
         let mut line_sets: Vec<Vec<String>> = Vec::new();
         for &sid in sources {
             line_sets.push(self.compute_state_at(sid)?);
         }
 
-        let merged_lines = tag::union_line_sets(&line_sets);
+        // Merge using LCA ordering to preserve relative line positions.
+        let merged_lines = match mode {
+            MergeMode::Union => tag::merge_union_by_lca(&lca_lines, &line_sets),
+            MergeMode::Intersection => {
+                tag::merge_intersection_by_lca(&lca_lines, &line_sets)
+            }
+            MergeMode::Subtract => {
+                let base = &line_sets[0];
+                let subtrahends = &line_sets[1..];
+                tag::merge_subtract_by_lca(&lca_lines, base, subtrahends)
+            }
+            MergeMode::Xor => tag::merge_xor_by_lca(&lca_lines, &line_sets),
+        };
 
         let operation = Operation::Merge {
             sources: sources.to_vec(),
+            mode,
         };
         let inverse = InverseData::MergeInverse {
             source_line_sets: line_sets,
         };
 
-        // Attach to the first source (arbitrary parent choice)
-        let parent_id = sources[0];
         let new_node_id =
             self.history
                 .add_child(parent_id, operation, inverse);

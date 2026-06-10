@@ -135,6 +135,31 @@ impl CacheManager {
         }
     }
 
+    /// Clear all cached entries for a specific repository.
+    /// Call this after operations that change the history tree (merge, undo, etc.).
+    pub fn clear_repo(&mut self, repo_hash: &str) {
+        let paths: Vec<PathBuf> = self
+            .index
+            .entries
+            .iter()
+            .filter(|e| e.repo_hash == repo_hash)
+            .map(|e| self.cache_path(&e.repo_hash, e.node_id))
+            .collect();
+        for path in &paths {
+            let _ = fs::remove_file(path);
+        }
+        let removed_size: u64 = self
+            .index
+            .entries
+            .iter()
+            .filter(|e| e.repo_hash == repo_hash)
+            .map(|e| e.size_bytes)
+            .sum();
+        self.index.total_size_bytes = self.index.total_size_bytes.saturating_sub(removed_size);
+        self.index.entries.retain(|e| e.repo_hash != repo_hash);
+        let _ = self.save_index();
+    }
+
     /// Check if a cached state exists for a node.
     pub fn has(&self, repo_hash: &str, node_id: usize) -> bool {
         let path = self.cache_path(repo_hash, node_id);

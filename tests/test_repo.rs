@@ -1,7 +1,7 @@
 use std::fs;
 use tempfile::TempDir;
 
-use lograph::operator::Operation;
+use lograph::operator::{MergeMode, Operation};
 use lograph::repo::LogRepo;
 
 fn create_test_log(lines: usize) -> String {
@@ -889,7 +889,7 @@ fn test_merge_nodes_union() {
     .unwrap();
 
     // Merge node 1 and node 2
-    let new_id = repo.merge_nodes(&[1, 2], "merged").unwrap();
+    let new_id = repo.merge_nodes(&[1, 2], "merged", MergeMode::Union).unwrap();
 
     let lines = repo.get_current_lines().unwrap();
     // Union of ["ERROR auth", "ERROR disk"] and ["WARN memory"]
@@ -902,8 +902,9 @@ fn test_merge_nodes_union() {
     // Verify operation type on the new node
     let new_node = repo.history_tree().get_node(new_id).unwrap();
     match new_node.operation.as_ref().unwrap() {
-        Operation::Merge { sources } => {
+        Operation::Merge { sources, mode } => {
             assert_eq!(sources.len(), 2);
+            assert!(matches!(mode, MergeMode::Union));
         }
         _ => panic!("Expected Merge operation"),
     }
@@ -923,9 +924,430 @@ fn test_merge_nodes_single_source() {
     })
     .unwrap();
 
-    let new_id = repo.merge_nodes(&[1], "single-merge").unwrap();
+    let new_id = repo.merge_nodes(&[1], "single-merge", MergeMode::Union).unwrap();
     let lines = repo.get_current_lines().unwrap();
     assert_eq!(lines, vec!["A", "B"]);
+}
+
+// ── Node merge intersection (AND) ──
+
+#[test]
+fn test_merge_nodes_intersection() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path().join("repo");
+    let data = b"ERROR auth\nWARN memory\nERROR disk\nINFO startup\n";
+    let mut repo = LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
+
+    // Node 1: keep ERROR → "ERROR auth", "ERROR disk"
+    repo.apply_operation(Operation::Filter {
+        pattern: "ERROR".to_string(),
+        keep: true,
+    })
+    .unwrap();
+    repo.undo().unwrap();
+
+    // Node 2: keep "disk" → "ERROR disk"
+    repo.apply_operation_from(0, "disk-branch", Operation::Filter {
+        pattern: "disk".to_string(),
+        keep: true,
+    })
+    .unwrap();
+
+    // Intersection of node 1 and node 2: only "ERROR disk"
+    let new_id = repo.merge_nodes(&[1, 2], "and-merge", MergeMode::Intersection).unwrap();
+    let lines = repo.get_current_lines().unwrap();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0], "ERROR disk");
+
+    let new_node = repo.history_tree().get_node(new_id).unwrap();
+    match new_node.operation.as_ref().unwrap() {
+        Operation::Merge { sources, mode } => {
+            assert_eq!(sources.len(), 2);
+            assert!(matches!(mode, MergeMode::Intersection));
+        }
+        _ => panic!("Expected Merge operation"),
+    }
+}
+
+// ── Node merge subtract (SUB) ──
+
+#[test]
+fn test_merge_nodes_subtract() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path().join("repo");
+    let data = b"ERROR auth\nERROR disk\nWARN memory\nINFO startup\n";
+    let mut repo = LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
+
+    // Node 1: keep ERROR → "ERROR auth", "ERROR disk"
+    repo.apply_operation(Operation::Filter {
+        pattern: "ERROR".to_string(),
+        keep: true,
+    })
+    .unwrap();
+    repo.undo().unwrap();
+
+    // Node 2: keep "disk" → "ERROR disk"
+    repo.apply_operation_from(0, "disk-branch", Operation::Filter {
+        pattern: "disk".to_string(),
+        keep: true,
+    })
+    .unwrap();
+
+    // SUB: node1 minus node2 → "ERROR auth"
+    let new_id = repo.merge_nodes(&[1, 2], "sub-merge", MergeMode::Subtract).unwrap();
+    let lines = repo.get_current_lines().unwrap();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0], "ERROR auth");
+
+    let new_node = repo.history_tree().get_node(new_id).unwrap();
+    match new_node.operation.as_ref().unwrap() {
+        Operation::Merge { sources, mode } => {
+            assert!(matches!(mode, MergeMode::Subtract));
+        }
+        _ => panic!("Expected Merge operation"),
+    }
+}
+
+// ── Node merge symmetric difference (XOR) ──
+
+#[test]
+fn test_merge_nodes_xor() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path().join("repo");
+    let data = b"ERROR auth\nWARN memory\nERROR disk\nINFO startup\n";
+    let mut repo = LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
+
+    // Node 1: keep ERROR → "ERROR auth", "ERROR disk"
+    repo.apply_operation(Operation::Filter {
+        pattern: "ERROR".to_string(),
+        keep: true,
+    })
+    .unwrap();
+    repo.undo().unwrap();
+
+    // Node 2: keep "disk" and "INFO" → "ERROR disk", "INFO startup"
+    repo.apply_operation_from(0, "other-branch", Operation::Filter {
+        pattern: "disk|INFO".to_string(),
+        keep: true,
+    })
+    .unwrap();
+
+    // XOR: node1 xor node2
+    // node1: ERROR auth, ERROR disk
+    // node2: ERROR disk, INFO startup
+    // XOR: ERROR auth (1x), INFO startup (1x), ERROR disk (2x → excluded)
+    let new_id = repo.merge_nodes(&[1, 2], "xor-merge", MergeMode::Xor).unwrap();
+    let lines = repo.get_current_lines().unwrap();
+    assert_eq!(lines.len(), 2);
+    assert!(lines.contains(&"ERROR auth".to_string()));
+    assert!(lines.contains(&"INFO startup".to_string()));
+
+    let new_node = repo.history_tree().get_node(new_id).unwrap();
+    match new_node.operation.as_ref().unwrap() {
+        Operation::Merge { sources, mode } => {
+            assert!(matches!(mode, MergeMode::Xor));
+        }
+        _ => panic!("Expected Merge operation"),
+    }
+}
+
+// ── Node merge three sources ──
+
+#[test]
+fn test_merge_nodes_three_sources_union() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path().join("repo");
+    let data = b"A\nB\nC\nD\nE\n";
+    let mut repo = LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
+
+    // Node 1: keep A, B
+    repo.apply_operation(Operation::Filter {
+        pattern: "[AB]".into(),
+        keep: true,
+    })
+    .unwrap();
+    repo.undo().unwrap();
+
+    // Node 2: keep C, D
+    repo.apply_operation_from(0, "cd", Operation::Filter {
+        pattern: "[CD]".into(),
+        keep: true,
+    })
+    .unwrap();
+
+    // Node 3: keep E (from another branch)
+    repo.checkout_branch("main").unwrap();
+    repo.apply_operation_from(0, "e", Operation::Filter {
+        pattern: "E".into(),
+        keep: true,
+    })
+    .unwrap();
+
+    let new_id = repo.merge_nodes(&[1, 2, 3], "three-union", MergeMode::Union).unwrap();
+    let lines = repo.get_current_lines().unwrap();
+    assert_eq!(lines.len(), 5);
+    for ch in &["A", "B", "C", "D", "E"] {
+        assert!(lines.contains(&ch.to_string()));
+    }
+}
+
+// ── Node merge LCA parent attachment ──
+
+#[test]
+fn test_merge_nodes_lca_parent() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path().join("repo");
+    let data = b"ERROR auth\nWARN memory\nERROR disk\n";
+    let mut repo = LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
+
+    // Node 1: keep ERROR (child of root)
+    repo.apply_operation(Operation::Filter {
+        pattern: "ERROR".to_string(),
+        keep: true,
+    })
+    .unwrap();
+
+    // Create a branch from node 1, apply another filter → node 2 is child of node 1
+    repo.create_branch("branch-a", 1).unwrap();
+    repo.checkout_branch("branch-a").unwrap();
+    repo.apply_operation(Operation::Filter {
+        pattern: "auth".to_string(),
+        keep: true,
+    })
+    .unwrap();
+    // Now node 2 is a child of node 1
+
+    // Create another branch from node 1, apply different filter → node 3
+    repo.create_branch("branch-b", 1).unwrap();
+    repo.checkout_branch("branch-b").unwrap();
+    repo.apply_operation(Operation::Filter {
+        pattern: "disk".to_string(),
+        keep: true,
+    })
+    .unwrap();
+    // Now node 3 is also a child of node 1
+
+    // LCA of nodes 2 and 3 should be node 1 (not root)
+    let lca = repo.history_tree().lowest_common_ancestor(&[2, 3]).unwrap();
+    assert_eq!(lca, 1);
+
+    // Merge nodes 2 and 3 — the new node should be attached to the LCA (node 1)
+    let new_id = repo.merge_nodes(&[2, 3], "lca-merge", MergeMode::Union).unwrap();
+    let new_node = repo.history_tree().get_node(new_id).unwrap();
+    assert_eq!(new_node.parent_id, Some(1)); // parent is LCA, not root
+}
+
+// ── Node merge empty intersection result ──
+
+#[test]
+fn test_merge_nodes_intersection_empty() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path().join("repo");
+    let data = b"ERROR auth\nWARN memory\n";
+    let mut repo = LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
+
+    // Node 1: only ERROR
+    repo.apply_operation(Operation::Filter {
+        pattern: "ERROR".to_string(),
+        keep: true,
+    })
+    .unwrap();
+    repo.undo().unwrap();
+
+    // Node 2: only WARN
+    repo.apply_operation_from(0, "warn", Operation::Filter {
+        pattern: "WARN".to_string(),
+        keep: true,
+    })
+    .unwrap();
+
+    // Intersection of disjoint sets
+    let result = repo.merge_nodes(&[1, 2], "empty", MergeMode::Intersection);
+    assert!(result.is_ok());
+    let lines = repo.get_current_lines().unwrap();
+    assert!(lines.is_empty());
+}
+
+// ── Verify compute_state_at works for merge nodes (regression test) ──
+
+#[test]
+fn test_compute_state_at_merge_node() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path().join("repo");
+    let data = b"ERROR auth\nWARN memory\nERROR disk\nINFO startup\n";
+    let mut repo = LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
+
+    // Node 1: keep ERROR → "ERROR auth", "ERROR disk"
+    repo.apply_operation(Operation::Filter {
+        pattern: "ERROR".to_string(),
+        keep: true,
+    })
+    .unwrap();
+    repo.undo().unwrap();
+
+    // Node 2: keep WARN → "WARN memory"
+    repo.apply_operation_from(0, "warn-branch", Operation::Filter {
+        pattern: "WARN".to_string(),
+        keep: true,
+    })
+    .unwrap();
+
+    // Merge node 1 and node 2
+    let merge_id = repo.merge_nodes(&[1, 2], "merged", MergeMode::Union).unwrap();
+
+    // compute_state_at on the merge node should work (was broken before fix)
+    let state = repo.compute_state_at(merge_id).unwrap();
+    assert_eq!(state.len(), 3);
+    assert!(state.contains(&"ERROR auth".to_string()));
+    assert!(state.contains(&"ERROR disk".to_string()));
+    assert!(state.contains(&"WARN memory".to_string()));
+
+    // Also test via line_count_at
+    let count = repo.line_count_at(merge_id).unwrap();
+    assert_eq!(count, 3);
+
+    // After losing the cache (switch away and back), it should still work
+    repo.checkout_branch("main").unwrap();
+    repo.checkout_branch("merged").unwrap();
+    let state2 = repo.compute_state_at(merge_id).unwrap();
+    assert_eq!(state2.len(), 3);
+}
+
+// ── Verify source nodes are not corrupted after merge ──
+
+#[test]
+fn test_merge_nodes_sources_unchanged() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path().join("repo");
+    let data = b"line with 200 code\nline with 201 code\nanother 200 line\nother 201 line\n";
+    let mut repo = LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
+
+    // Node 1: filter keep 201 → "line with 201 code", "other 201 line"
+    repo.apply_operation(Operation::Filter {
+        pattern: "201".to_string(),
+        keep: true,
+    })
+    .unwrap();
+    let node1_original = repo.compute_state_at(1).unwrap();
+    assert_eq!(node1_original.len(), 2);
+    for l in &node1_original {
+        assert!(l.contains("201"), "node 1 should have 201: {}", l);
+    }
+
+    // Node 2: filter keep 200 → "line with 200 code", "another 200 line"
+    repo.undo().unwrap();
+    repo.apply_operation_from(0, "branch-200", Operation::Filter {
+        pattern: "200".to_string(),
+        keep: true,
+    })
+    .unwrap();
+    let node2_original = repo.compute_state_at(2).unwrap();
+    assert_eq!(node2_original.len(), 2);
+    for l in &node2_original {
+        assert!(l.contains("200"), "node 2 should have 200: {}", l);
+    }
+
+    // Merge node 1 and node 2
+    let merge_id = repo.merge_nodes(&[1, 2], "merged", MergeMode::Union).unwrap();
+    let merge_lines = repo.compute_state_at(merge_id).unwrap();
+    assert_eq!(merge_lines.len(), 4);
+
+    // CRITICAL: after merge, source nodes must retain their original content
+    let n1_after = repo.compute_state_at(1).unwrap();
+    assert_eq!(n1_after.len(), 2, "node 1 should still have 2 lines after merge");
+    for l in &n1_after {
+        assert!(l.contains("201"), "BUG: node 1 after merge has non-201: {}", l);
+    }
+
+    let n2_after = repo.compute_state_at(2).unwrap();
+    assert_eq!(n2_after.len(), 2, "node 2 should still have 2 lines after merge");
+    for l in &n2_after {
+        assert!(l.contains("200"), "BUG: node 2 after merge has non-200: {}", l);
+    }
+
+    // Source nodes should have different content
+    assert_ne!(n1_after, n2_after, "BUG: nodes 1 and 2 have same content after merge");
+}
+
+// ── Node merge preserves LCA line ordering ──
+
+#[test]
+fn test_merge_nodes_preserves_lca_ordering() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path().join("repo");
+
+    // Interleaved data matching the user's example:
+    // LCA (root): 01, 02, 03, 01, 01, 02, 02, 03, 03
+    let data = b"01\n02\n03\n01\n01\n02\n02\n03\n03\n";
+    let mut repo = LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
+
+    // Node 1: filter keep lines matching "01" → "01", "01", "01"
+    repo.apply_operation(Operation::Filter {
+        pattern: "01".to_string(),
+        keep: true,
+    })
+    .unwrap();
+    let node1_lines = repo.compute_state_at(1).unwrap();
+    assert_eq!(node1_lines, vec!["01", "01", "01"]);
+
+    repo.undo().unwrap();
+
+    // Node 2: filter keep lines matching "02" → "02", "02", "02"
+    repo.apply_operation_from(0, "branch-02", Operation::Filter {
+        pattern: "02".to_string(),
+        keep: true,
+    })
+    .unwrap();
+    let node2_lines = repo.compute_state_at(2).unwrap();
+    assert_eq!(node2_lines, vec!["02", "02", "02"]);
+
+    // Union merge: result should preserve LCA ordering
+    let merge_id = repo.merge_nodes(&[1, 2], "merged", MergeMode::Union).unwrap();
+    let merged = repo.compute_state_at(merge_id).unwrap();
+
+    // Expected: walk LCA, keep lines that are in either source
+    // LCA: 01, 02, 03, 01, 01, 02, 02, 03, 03
+    // Keep 01s and 02s, skip 03s
+    assert_eq!(
+        merged,
+        vec!["01", "02", "01", "01", "02", "02"],
+        "Union merge must preserve LCA ordering, not concatenate sources"
+    );
+}
+
+// ── Node merge intersection with LCA ordering ──
+
+#[test]
+fn test_merge_nodes_intersection_lca_ordering() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path().join("repo");
+
+    // Data: a, b, c, a, b
+    let data = b"a\nb\nc\na\nb\n";
+    let mut repo = LogRepo::import_from_bytes(&repo_path, data, "test".into()).unwrap();
+
+    // Node 1: keep a, b → "a", "b", "a", "b"
+    repo.apply_operation(Operation::Filter {
+        pattern: "[ab]".to_string(),
+        keep: true,
+    })
+    .unwrap();
+    repo.undo().unwrap();
+
+    // Node 2: keep a, c → "a", "c", "a"
+    repo.apply_operation_from(0, "branch-ac", Operation::Filter {
+        pattern: "[ac]".to_string(),
+        keep: true,
+    })
+    .unwrap();
+
+    // Intersection: only "a" is in both. With multiplicities:
+    // S1 has 2 "a"s, S2 has 2 "a"s → intersection has 2 "a"s
+    // LCA order: a, b, c, a, b → filter to intersection: a, a
+    let merge_id = repo.merge_nodes(&[1, 2], "inter", MergeMode::Intersection).unwrap();
+    let merged = repo.compute_state_at(merge_id).unwrap();
+    assert_eq!(merged, vec!["a", "a"],
+        "Intersection must preserve LCA ordering");
 }
 
 // ── Node subtract (set difference) ──

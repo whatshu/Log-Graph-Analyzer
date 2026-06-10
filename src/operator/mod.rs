@@ -13,6 +13,25 @@ use serde::{Deserialize, Serialize};
 use crate::engine::Collector;
 use crate::error::Result;
 
+/// The set operation mode for merging multiple source nodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MergeMode {
+    /// Set union — all unique lines from all sources.
+    Union,
+    /// Set intersection — only lines present in every source.
+    Intersection,
+    /// Set subtraction — first source minus all other sources.
+    Subtract,
+    /// Symmetric difference — lines present in an odd number of sources.
+    Xor,
+}
+
+/// Default merge mode for backward compatibility (old serialized Merge nodes
+/// don't have a `mode` field).
+fn default_merge_mode() -> MergeMode {
+    MergeMode::Union
+}
+
 /// Represents a reversible operation on log lines.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Operation {
@@ -40,10 +59,12 @@ pub enum Operation {
         line_index: usize,
         new_content: String,
     },
-    /// Merge: UNION of line sets from multiple source nodes.
+    /// Merge: set operation on line sets from multiple source nodes.
     /// Handled at LogRepo level — see `LogRepo::merge_nodes()`.
     Merge {
         sources: Vec<usize>,
+        #[serde(default = "default_merge_mode")]
+        mode: MergeMode,
     },
     /// Subtract: lines in `base` node minus lines in `subtrahend` node.
     /// Handled at LogRepo level — see `LogRepo::subtract_nodes()`.
@@ -216,9 +237,15 @@ impl Operation {
             } => {
                 format!("modify line {}", line_index)
             }
-            Operation::Merge { sources } => {
+            Operation::Merge { sources, mode } => {
                 let ids: Vec<String> = sources.iter().map(|s| s.to_string()).collect();
-                format!("merge nodes [{}]", ids.join(", "))
+                let mode_str = match mode {
+                    MergeMode::Union => "OR",
+                    MergeMode::Intersection => "AND",
+                    MergeMode::Subtract => "SUB",
+                    MergeMode::Xor => "XOR",
+                };
+                format!("merge [{}] ({})", ids.join(", "), mode_str)
             }
             Operation::Subtract { base, subtrahend } => {
                 format!("subtract node {} from node {}", subtrahend, base)

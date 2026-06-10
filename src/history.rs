@@ -115,6 +115,32 @@ impl HistoryTree {
         path
     }
 
+    /// Find the lowest common ancestor of multiple nodes.
+    /// Returns `None` if any node is not found, otherwise `Some(lca_id)`.
+    /// For a single node, returns the node itself. Returns root (0) if
+    /// the only common ancestor is the root.
+    pub fn lowest_common_ancestor(&self, node_ids: &[usize]) -> Option<usize> {
+        if node_ids.is_empty() {
+            return None;
+        }
+        let paths: Vec<Vec<usize>> = node_ids
+            .iter()
+            .map(|&id| self.path_to(id))
+            .collect();
+        // Find longest common prefix
+        let min_len = paths.iter().map(|p| p.len()).min().unwrap_or(0);
+        let mut lca = 0usize;
+        for i in 0..min_len {
+            let candidate = paths[0][i];
+            if paths.iter().all(|p| p[i] == candidate) {
+                lca = candidate;
+            } else {
+                break;
+            }
+        }
+        Some(lca)
+    }
+
     /// Get a reference to a node by ID.
     pub fn get_node(&self, id: usize) -> Option<&HistoryNode> {
         self.nodes.get(id)
@@ -412,7 +438,7 @@ impl HistoryTree {
         &self,
         node_id: usize,
         depth: usize,
-        ancestors: &mut Vec<usize>,
+        continuing_forks: &mut Vec<bool>,
         result: &mut Vec<TopoEntry>,
         is_last_child: bool,
         sibling_count: usize,
@@ -444,7 +470,7 @@ impl HistoryTree {
         result.push(TopoEntry {
             node_id,
             depth,
-            ancestors: ancestors.clone(),
+            ancestors: continuing_forks.clone(),
             branch_labels,
             is_current_head,
             description: desc,
@@ -456,15 +482,21 @@ impl HistoryTree {
             sibling_count,
         });
 
-        // Visit children (include deleted nodes — they're shown dimmed)
+        // Visit children (include deleted nodes — they're shown dimmed).
+        // Depth only increases at fork points (nodes with >1 child).
+        // Linear chains (only-child nodes) stay at the same display depth.
+        let is_fork = num_children > 1;
+        let child_depth = if is_fork { depth + 1 } else { depth };
+
         for (i, &child_id) in node.children_ids.iter().enumerate() {
             let is_last = i == num_children - 1;
-            if !is_last {
-                ancestors.push(node_id);
+            if is_fork {
+                // This node is a fork point: push whether this fork has more children coming.
+                continuing_forks.push(!is_last);
             }
-            self.visit_subtree(child_id, depth + 1, ancestors, result, is_last, num_children);
-            if !is_last {
-                ancestors.pop();
+            self.visit_subtree(child_id, child_depth, continuing_forks, result, is_last, num_children);
+            if is_fork {
+                continuing_forks.pop();
             }
         }
     }
@@ -480,8 +512,12 @@ impl Default for HistoryTree {
 #[derive(Debug, Clone)]
 pub struct TopoEntry {
     pub node_id: usize,
+    /// Display depth: only increments at fork points (nodes with >1 child).
+    /// Linear chains share the same depth.
     pub depth: usize,
-    pub ancestors: Vec<usize>,
+    /// At each display-depth level 0..depth-1, whether the fork at that level
+    /// still has more children to show (controls vertical `│` continuation lines).
+    pub ancestors: Vec<bool>,
     pub branch_labels: Vec<String>,
     pub is_current_head: bool,
     pub description: String,

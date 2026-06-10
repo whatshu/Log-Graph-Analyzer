@@ -135,6 +135,12 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    // If merge mode popup is showing, handle merge mode keys
+    if app.show_merge_mode_popup {
+        handlers::handle_merge_mode_popup(app, key);
+        return;
+    }
+
     // Esc behavior: in file browser, cancel; otherwise clear input modes
     if key.code == KeyCode::Esc {
         match app.input_mode {

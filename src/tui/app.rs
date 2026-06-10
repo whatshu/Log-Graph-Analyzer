@@ -6,7 +6,7 @@ use lograph::cache::CacheManager;
 use lograph::config::Config;
 use lograph::engine::{CollectResult, Collector};
 use lograph::error::Result;
-use lograph::operator::Operation;
+use lograph::operator::{MergeMode, Operation};
 use lograph::repo::{LogRepo, Workspace};
 use lograph::tag::TagStore;
 
@@ -46,7 +46,7 @@ pub enum PendingOp {
     CheckoutTo(usize),
     ExportFrom(usize, String),
     /// Merge marked nodes
-    MergeNodes { sources: Vec<usize>, branch: String },
+    MergeNodes { sources: Vec<usize>, branch: String, mode: MergeMode },
     /// Subtract one node from another
     SubtractNodes { base: usize, subtrahend: usize, branch: String },
     /// Replay a node's operation at a different position
@@ -140,6 +140,11 @@ pub struct App {
     pub tag_manager_scroll: usize,
     pub tag_manager_h_scroll: usize,
     pub pending_tag_rename: Option<String>,
+
+    /// Merge mode selection popup
+    pub show_merge_mode_popup: bool,
+    pub merge_mode_cursor: usize,
+    pub merge_sources: Vec<usize>,
 
     // ── Search tag range ──
     pub search_tag_start: Option<String>,
@@ -266,6 +271,9 @@ impl App {
             tag_manager_scroll: 0,
             tag_manager_h_scroll: 0,
             pending_tag_rename: None,
+            show_merge_mode_popup: false,
+            merge_mode_cursor: 0,
+            merge_sources: Vec::new(),
             search_tag_start: None,
             search_tag_end: None,
             picking_search_tag: false,
@@ -731,11 +739,16 @@ impl App {
                     }
                 }
 
+                self.build_history();
                 self.refresh_line_count();
                 self.load_viewport();
                 self.clear_search();
             }
             PendingOp::Undo => {
+                let repo_hash = {
+                    let repo_mut = self.repo.borrow_mut();
+                    repo_mut.as_ref().map(|r| lograph::cache::hash_repo_path(r.path()))
+                };
                 // Snapshot tags before undo so we can restore them after
                 let tags_before = self.tag_store.get_tags(&self.repo_name).to_vec();
                 let mut repo_mut = self.repo.borrow_mut();
@@ -760,6 +773,10 @@ impl App {
                     self.tag_store.repos.insert(self.repo_name.clone(), tags_before);
                     let _ = self.tag_store.save(&self.workspace.root());
                 }
+                if let Some(ref h) = repo_hash {
+                    self.cache_manager.clear_repo(h);
+                }
+                self.build_history();
                 self.refresh_line_count();
                 self.load_viewport();
                 self.clear_search();
@@ -874,18 +891,36 @@ impl App {
                     }
                 }
                 drop(repo_mut);
+                let repo_hash = {
+                    let repo_ref = self.repo.borrow();
+                    repo_ref.as_ref().map(|r| lograph::cache::hash_repo_path(r.path()))
+                };
+                if let Some(ref h) = repo_hash {
+                    self.cache_manager.clear_repo(h);
+                }
+                self.build_history();
                 self.refresh_line_count();
                 self.load_viewport();
                 self.clear_search();
             }
-            PendingOp::MergeNodes { sources, branch } => {
+            PendingOp::MergeNodes { sources, branch, mode } => {
+                let repo_hash = {
+                    let repo_mut = self.repo.borrow_mut();
+                    repo_mut.as_ref().map(|r| lograph::cache::hash_repo_path(r.path()))
+                };
                 let mut repo_mut = self.repo.borrow_mut();
                 if let Some(ref mut r) = *repo_mut {
-                    match r.merge_nodes(&sources, &branch) {
+                    match r.merge_nodes(&sources, &branch, mode) {
                         Ok(new_id) => {
+                            let mode_str = match mode {
+                                MergeMode::Union => "OR",
+                                MergeMode::Intersection => "AND",
+                                MergeMode::Subtract => "SUB",
+                                MergeMode::Xor => "XOR",
+                            };
                             self.status_message = format!(
-                                "Merged {} nodes into new node {} on branch '{}'",
-                                sources.len(), new_id, branch
+                                "Merged {} nodes ({}) into new node {} on branch '{}'",
+                                sources.len(), mode_str, new_id, branch
                             );
                             self.line_count_is_original = false;
                             self.viewed_node_id = None;
@@ -899,11 +934,20 @@ impl App {
                 }
                 self.history_marks.clear();
                 drop(repo_mut);
+                // Clear stale cache entries after tree modification
+                if let Some(ref h) = repo_hash {
+                    self.cache_manager.clear_repo(h);
+                }
+                self.build_history();
                 self.refresh_line_count();
                 self.load_viewport();
                 self.clear_search();
             }
             PendingOp::SubtractNodes { base, subtrahend, branch } => {
+                let repo_hash = {
+                    let repo_mut = self.repo.borrow_mut();
+                    repo_mut.as_ref().map(|r| lograph::cache::hash_repo_path(r.path()))
+                };
                 let mut repo_mut = self.repo.borrow_mut();
                 if let Some(ref mut r) = *repo_mut {
                     match r.subtract_nodes(base, subtrahend, &branch) {
@@ -924,11 +968,19 @@ impl App {
                 }
                 self.diff_base_node_id = None;
                 drop(repo_mut);
+                if let Some(ref h) = repo_hash {
+                    self.cache_manager.clear_repo(h);
+                }
+                self.build_history();
                 self.refresh_line_count();
                 self.load_viewport();
                 self.clear_search();
             }
             PendingOp::ReplayNode { source, target_parent, branch } => {
+                let repo_hash = {
+                    let repo_mut = self.repo.borrow_mut();
+                    repo_mut.as_ref().map(|r| lograph::cache::hash_repo_path(r.path()))
+                };
                 let mut repo_mut = self.repo.borrow_mut();
                 if let Some(ref mut r) = *repo_mut {
                     match r.replay_node_at(source, target_parent, &branch) {
@@ -948,6 +1000,10 @@ impl App {
                     }
                 }
                 drop(repo_mut);
+                if let Some(ref h) = repo_hash {
+                    self.cache_manager.clear_repo(h);
+                }
+                self.build_history();
                 self.refresh_line_count();
                 self.load_viewport();
                 self.clear_search();
@@ -969,6 +1025,7 @@ impl App {
                     }
                 }
                 drop(repo_mut);
+                self.build_history();
                 self.refresh_line_count();
                 self.load_viewport();
                 self.clear_search();
@@ -1249,14 +1306,15 @@ impl App {
 }
 
 /// Build a tree connector string like git log --graph.
-/// ancestors: list of ancestor node_ids that have more children after the current one.
+/// continuing_forks: at each display-depth level, whether the fork at that level
+///   still has more children to show (controls vertical `│` lines).
 /// sibling_count: number of children the parent node has. 1 = only child (linear), >1 = fork.
 /// is_last_child: whether this is the last child of its parent.
 /// When `ascii_only` is true, uses ASCII characters (|, `--, `--) instead of
 /// Unicode box-drawing (│, ├─, └─) for terminals that don't support UTF-8.
 fn build_connector(
     depth: usize,
-    ancestors: &[usize],
+    continuing_forks: &[bool],
     sibling_count: usize,
     is_last_child: bool,
     ascii_only: bool,
@@ -1265,9 +1323,9 @@ fn build_connector(
         return String::new();
     }
     let mut s = String::with_capacity(depth * 2);
-    // Draw vertical lines for ancestor levels that still have children to show.
+    // Draw vertical lines for fork levels that still have children to show.
     for d in 0..depth - 1 {
-        let has_continuing = ancestors.len() > d;
+        let has_continuing = continuing_forks.get(d).copied().unwrap_or(false);
         if has_continuing {
             if ascii_only {
                 s.push_str("| ");
@@ -2240,6 +2298,105 @@ mod tests {
         // Search should be cleared
         assert!(app.search_query.is_empty());
         assert!(app.search_results.is_empty());
+    }
+
+    // ── Merge + view content correctness ──
+
+    fn setup_app_custom(tmp: &TempDir, log_data: &[u8]) -> App {
+        let log_file = tmp.path().join("test.log");
+        fs::write(&log_file, log_data).unwrap();
+        let ws_root = tmp.path().join("workspace");
+        let ws = Workspace::open(&ws_root).unwrap();
+        let _ = ws.migrate_if_needed();
+        ws.import_file("test", &log_file).unwrap();
+        App::new(&ws_root, Some("test")).unwrap()
+    }
+
+    #[test]
+    fn test_merge_view_content_correctness() {
+        let tmp = TempDir::new().unwrap();
+        // Create log with distinct 201 and 200 lines
+        let log_data = b"line with 201 code\nline with 200 code\nanother 201 line\nanother 200 line\n";
+        let mut app = setup_app_custom(&tmp, log_data);
+
+        // Step 1: Apply filter keep 201 → creates node 1
+        app.queue_operation(Operation::Filter {
+            pattern: "201".to_string(),
+            keep: true,
+        });
+        app.apply_pending();
+
+        // Step 2: Undo → back to root
+        app.queue_undo();
+        app.apply_pending();
+
+        // Step 3: Apply filter keep 200 from root → creates node 2
+        app.queue_operation(Operation::Filter {
+            pattern: "200".to_string(),
+            keep: true,
+        });
+        app.apply_pending();
+
+        // Build history so we can see the nodes
+        app.build_history();
+        assert_eq!(app.history_nodes.len(), 3, "should have root + 2 filter nodes");
+
+        // Verify node IDs are 1 and 2 (node 0 is root/import)
+        let node1 = app.history_nodes.iter().find(|n| n.id == 1).expect("node 1 not found");
+        let node2 = app.history_nodes.iter().find(|n| n.id == 2).expect("node 2 not found");
+        assert_ne!(node1.id, node2.id);
+
+        // Step 4: Verify source node content BEFORE merge
+        let n1_before = app.get_node_lines(1).expect("get_node_lines(1) before merge");
+        assert!(n1_before.iter().all(|l| l.contains("201")),
+            "node 1 before merge should only have 201 lines, got: {:?}", n1_before);
+
+        let n2_before = app.get_node_lines(2).expect("get_node_lines(2) before merge");
+        assert!(n2_before.iter().all(|l| l.contains("200")),
+            "node 2 before merge should only have 200 lines, got: {:?}", n2_before);
+
+        assert_ne!(n1_before, n2_before, "nodes 1 and 2 should have different content before merge");
+
+        // Step 5: Mark both nodes and execute merge
+        app.history_marks.insert(1);
+        app.history_marks.insert(2);
+        let mut sources: Vec<usize> = app.history_marks.iter().copied().collect();
+        sources.sort_unstable();
+        app.pending_op = PendingOp::MergeNodes {
+            sources,
+            branch: "merge-1-2".to_string(),
+            mode: MergeMode::Union,
+        };
+        app.apply_pending();
+
+        // Step 6: Build history to see the merge node
+        app.build_history();
+        let merge_node = app.history_nodes.iter().find(|n| n.id == 3).expect("merge node 3 not found");
+        assert!(merge_node.description.contains("merge"), "node 3 should be a merge node");
+
+        // Step 7: CRITICAL — verify source nodes UNCHANGED after merge
+        let n1_after = app.get_node_lines(1).expect("get_node_lines(1) after merge");
+        assert!(n1_after.iter().all(|l| l.contains("201")),
+            "BUG: node 1 after merge lost its 201 content, got: {:?}", n1_after);
+        assert_eq!(n1_after, n1_before,
+            "BUG: node 1 content changed after merge! before={:?} after={:?}", n1_before, n1_after);
+
+        let n2_after = app.get_node_lines(2).expect("get_node_lines(2) after merge");
+        assert!(n2_after.iter().all(|l| l.contains("200")),
+            "BUG: node 2 after merge lost its 200 content, got: {:?}", n2_after);
+        assert_eq!(n2_after, n2_before,
+            "BUG: node 2 content changed after merge! before={:?} after={:?}", n2_before, n2_after);
+
+        assert_ne!(n1_after, n2_after,
+            "BUG: nodes 1 and 2 have identical content after merge");
+
+        // Step 8: Verify merge node has UNION of both sources
+        let n3 = app.get_node_lines(3).expect("get_node_lines(3) after merge");
+        assert_eq!(n3.len(), 4, "merge should have 4 lines (2 from 201 + 2 from 200), got {}: {:?}", n3.len(), n3);
+        let has_201 = n3.iter().any(|l| l.contains("201"));
+        let has_200 = n3.iter().any(|l| l.contains("200"));
+        assert!(has_201, "merge should contain 201 lines, got: {:?}", n3);
+        assert!(has_200, "merge should contain 200 lines, got: {:?}", n3);
     }
 
     // ── Tag system tests ──

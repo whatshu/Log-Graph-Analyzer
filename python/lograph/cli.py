@@ -692,16 +692,19 @@ def node():
 
 @node.command(name="merge")
 @click.argument("source_ids", nargs=-1, type=int, required=True)
+@click.option("--mode", "-m", default="or",
+              type=click.Choice(["or", "union", "and", "intersection", "sub", "subtract", "xor"]),
+              help="Merge mode: or/union, and/intersection, sub/subtract, xor")
 @click.option("--branch", "-b", default=None, help="Branch name for the new node")
 @click.option("--repo", "-r", default=None, help="Repository name")
 @click.option("--workspace", "-w", default=None, help="Workspace directory")
-def node_merge(source_ids: tuple[int, ...], branch: str | None, repo: str | None, workspace: str | None):
-    """Merge multiple history nodes (OR union of line sets)."""
+def node_merge(source_ids: tuple[int, ...], mode: str, branch: str | None, repo: str | None, workspace: str | None):
+    """Merge multiple history nodes with a set operation mode."""
     log_repo = open_repo(workspace, repo)
     sources = list(source_ids)
     branch_name = branch or f"merge-{'-'.join(str(s) for s in sources)}"
-    new_id = log_repo.merge_nodes(sources, branch_name)
-    console.print(f"[green]Merged {len(sources)} nodes → new node {new_id} on branch '{branch_name}'[/green]")
+    new_id = log_repo.merge_nodes(sources, branch_name, mode)
+    console.print(f"[green]Merged {len(sources)} nodes ({mode}) → new node {new_id} on branch '{branch_name}'[/green]")
 
 
 @node.command(name="subtract")

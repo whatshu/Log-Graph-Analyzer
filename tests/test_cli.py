@@ -581,6 +581,73 @@ class TestNodeCLI:
         assert r.exit_code == 0
         assert "Merged" in r.output
 
+    def test_node_merge_with_and_mode(self, runner, ws_repo):
+        """Merge with AND (intersection) mode."""
+        runner.invoke(
+            main, ["filter", "ERROR", "--keep", "-w", ws_repo, "--repo", "test"]
+        )
+        runner.invoke(main, ["undo", "-w", ws_repo, "--repo", "test"])
+        runner.invoke(
+            main, ["filter", "ERROR", "--keep", "-w", ws_repo, "--repo", "test"]
+        )
+
+        r = runner.invoke(
+            main, ["node", "merge", "1", "2", "-w", ws_repo, "--repo", "test",
+                   "--branch", "and-merge", "--mode", "and"]
+        )
+        assert r.exit_code == 0
+        assert "and" in r.output
+
+    def test_node_merge_with_sub_mode(self, runner, ws_repo):
+        """Merge with SUB (subtract) mode."""
+        runner.invoke(
+            main, ["filter", "ERROR", "--keep", "-w", ws_repo, "--repo", "test"]
+        )
+        runner.invoke(main, ["undo", "-w", ws_repo, "--repo", "test"])
+        runner.invoke(
+            main, ["filter", "WARN", "--keep", "-w", ws_repo, "--repo", "test"]
+        )
+
+        r = runner.invoke(
+            main, ["node", "merge", "1", "2", "-w", ws_repo, "--repo", "test",
+                   "--branch", "sub-merge", "--mode", "sub"]
+        )
+        assert r.exit_code == 0
+        assert "sub" in r.output
+
+    def test_node_merge_with_xor_mode(self, runner, ws_repo):
+        """Merge with XOR (symmetric difference) mode."""
+        runner.invoke(
+            main, ["filter", "ERROR", "--keep", "-w", ws_repo, "--repo", "test"]
+        )
+        runner.invoke(main, ["undo", "-w", ws_repo, "--repo", "test"])
+        runner.invoke(
+            main, ["filter", "WARN", "--keep", "-w", ws_repo, "--repo", "test"]
+        )
+
+        r = runner.invoke(
+            main, ["node", "merge", "1", "2", "-w", ws_repo, "--repo", "test",
+                   "--branch", "xor-merge", "--mode", "xor"]
+        )
+        assert r.exit_code == 0
+        assert "xor" in r.output
+
+    def test_node_merge_invalid_mode(self, runner, ws_repo):
+        """Test that an invalid mode is rejected."""
+        runner.invoke(
+            main, ["filter", "ERROR", "--keep", "-w", ws_repo, "--repo", "test"]
+        )
+        runner.invoke(main, ["undo", "-w", ws_repo, "--repo", "test"])
+        runner.invoke(
+            main, ["filter", "WARN", "--keep", "-w", ws_repo, "--repo", "test"]
+        )
+
+        r = runner.invoke(
+            main, ["node", "merge", "1", "2", "-w", ws_repo, "--repo", "test",
+                   "--mode", "bogus"]
+        )
+        assert r.exit_code != 0
+
     def test_node_subtract(self, runner, ws_repo):
         runner.invoke(
             main, ["filter", "ERROR", "--keep", "-w", ws_repo, "--repo", "test"]

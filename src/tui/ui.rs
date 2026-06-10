@@ -74,13 +74,23 @@ pub fn render(f: &mut Frame, app: &mut App) {
     if app.show_tag_manager {
         render_tag_manager(f, f.area(), app);
     }
+
+    if app.show_merge_mode_popup {
+        render_merge_mode_popup(f, f.area(), app);
+    }
 }
 
 /// Context-sensitive action bar showing available keyboard shortcuts.
 /// When a popup is active (tag manager, help, etc.), hints for that popup are shown.
 /// Otherwise, hints reflect the current ViewKind.
 fn render_action_bar(f: &mut Frame, area: Rect, app: &App) {
-    let hints: Vec<(&str, Color)> = if app.show_tag_manager {
+    let hints: Vec<(&str, Color)> = if app.show_merge_mode_popup {
+        vec![
+            ("j/k:Select", COLOR_ACCENT),
+            ("Enter:Confirm", COLOR_HIGHLIGHT),
+            ("q/Esc:Cancel", COLOR_DIM),
+        ]
+    } else if app.show_tag_manager {
         vec![
             ("j/k:Select", COLOR_ACCENT),
             ("Enter:Activate", COLOR_HIGHLIGHT),
@@ -477,27 +487,9 @@ fn render_history(f: &mut Frame, area: Rect, app: &App) {
                 Style::default().fg(COLOR_DIM),
             );
 
-            // Branch labels
+            // Branch labels are not rendered (the user interacts via
+            // the history tree panel itself, not branch name tags).
             let mut label_spans: Vec<Span> = Vec::new();
-            for (bi, branch) in node.branch_labels.iter().enumerate() {
-                let is_active = *branch == current_branch;
-                let branch_color = if is_active {
-                    COLOR_ACCENT
-                } else {
-                    COLOR_HIGHLIGHT
-                };
-                label_spans.push(Span::styled(
-                    if app.ascii_only {
-                        format!(" <{}", branch)
-                    } else {
-                        format!(" ◄{}", branch)
-                    },
-                    Style::default().fg(branch_color).add_modifier(Modifier::BOLD),
-                ));
-                if bi < node.branch_labels.len() - 1 {
-                    label_spans.push(Span::raw(" "));
-                }
-            }
 
             // HEAD marker
             if node.is_head {
@@ -751,7 +743,7 @@ fn build_history_help() -> Vec<Line<'static>> {
         Line::from(""),
         section("Selection & Merge"),
         key_line("  Space       ", "  Mark node for multi-select merge"),
-        key_line("  m           ", "  Merge marked nodes (OR union)"),
+        key_line("  m           ", "  Merge marked nodes (choose mode)"),
         Line::from(""),
         section("Diff & Subtract"),
         key_line("  d           ", "  Set diff base; press again to subtract"),
@@ -1029,6 +1021,74 @@ fn render_tag_manager(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" Tag Manager ({}) ", tag_count))
+        .style(Style::default().bg(Color::Rgb(20, 20, 30)));
+    let p = Paragraph::new(lines).block(block);
+    f.render_widget(p, overlay_area);
+}
+
+fn render_merge_mode_popup(f: &mut Frame, area: Rect, app: &App) {
+    let modes = [
+        ("OR (Union)", "Lines from ANY source (unique)"),
+        ("AND (Intersection)", "Lines present in ALL sources"),
+        ("SUB (Subtract A-B)", "First source minus ALL others"),
+        ("XOR (Symmetric diff)", "Lines in odd number of sources"),
+    ];
+
+    let overlay_w = 48u16.min(area.width.saturating_sub(4));
+    let overlay_h = (modes.len() as u16 + 4).min(area.height.saturating_sub(4));
+    let overlay_area = Rect {
+        x: (area.width.saturating_sub(overlay_w)) / 2,
+        y: (area.height.saturating_sub(overlay_h)) / 2,
+        width: overlay_w,
+        height: overlay_h,
+    };
+
+    f.render_widget(Clear, overlay_area);
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    for (i, &(name, desc)) in modes.iter().enumerate() {
+        let is_selected = i == app.merge_mode_cursor;
+
+        let cursor_mark = if is_selected {
+            if app.ascii_only { "> " } else { "\u{25b8} " }
+        } else {
+            "  "
+        };
+
+        let name_style = if is_selected {
+            Style::default()
+                .fg(Color::Black)
+                .bg(COLOR_ACCENT)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(COLOR_FG)
+        };
+        let desc_style = if is_selected {
+            Style::default().fg(Color::Black).bg(COLOR_ACCENT)
+        } else {
+            Style::default().fg(COLOR_DIM)
+        };
+
+        lines.push(Line::from(vec![Span::styled(
+            format!("{} {}", cursor_mark, name),
+            name_style,
+        )]));
+        lines.push(Line::from(Span::styled(
+            format!("    {}", desc),
+            desc_style,
+        )));
+    }
+
+    // Close hint
+    lines.push(Line::from(Span::styled(
+        " j/k:Navigate  Enter:Confirm  q/Esc:Cancel",
+        Style::default().fg(COLOR_DIM).add_modifier(Modifier::ITALIC),
+    )));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" Merge {} nodes ", app.merge_sources.len()))
         .style(Style::default().bg(Color::Rgb(20, 20, 30)));
     let p = Paragraph::new(lines).block(block);
     f.render_widget(p, overlay_area);

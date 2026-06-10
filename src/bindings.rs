@@ -3,7 +3,7 @@ use pyo3::types::PyDict;
 use std::path::PathBuf;
 
 use crate::engine::{CollectResult, Collector};
-use crate::operator::Operation;
+use crate::operator::{MergeMode, Operation};
 use crate::repo::{LogRepo, Workspace};
 
 /// Python wrapper for LogRepo.
@@ -259,10 +259,28 @@ impl PyLogRepo {
 
     // ── History node operations ──
 
-    /// Merge multiple source nodes: create a new node whose state is the
-    /// UNION of all line sets at each source node. Returns new node ID.
-    fn merge_nodes(&mut self, sources: Vec<usize>, branch_name: &str) -> PyResult<usize> {
-        Ok(self.inner.merge_nodes(&sources, branch_name)?)
+    /// Merge multiple source nodes with a given set operation mode.
+    /// `mode` must be one of: "or"/"union", "and"/"intersection",
+    /// "sub"/"subtract", or "xor". Returns new node ID.
+    fn merge_nodes(
+        &mut self,
+        sources: Vec<usize>,
+        branch_name: &str,
+        mode: &str,
+    ) -> PyResult<usize> {
+        let merge_mode = match mode.to_lowercase().as_str() {
+            "or" | "union" => MergeMode::Union,
+            "and" | "intersection" => MergeMode::Intersection,
+            "sub" | "subtract" => MergeMode::Subtract,
+            "xor" => MergeMode::Xor,
+            _ => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "Unknown merge mode: {}. Use: or/union, and/intersection, sub/subtract, xor",
+                    mode
+                )));
+            }
+        };
+        Ok(self.inner.merge_nodes(&sources, branch_name, merge_mode)?)
     }
 
     /// Subtract one node's line set from another. Returns new node ID.
