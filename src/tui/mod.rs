@@ -1,9 +1,19 @@
+pub mod state;
 mod app;
 mod event;
 mod ui;
 pub mod widgets;
 pub mod handlers;
 pub mod file_browser;
+pub mod ops;
+mod search;
+mod collect;
+mod viewport;
+mod history_builder;
+mod tag_ops;
+
+#[cfg(test)]
+mod tests;
 
 use std::io;
 use std::path::Path;

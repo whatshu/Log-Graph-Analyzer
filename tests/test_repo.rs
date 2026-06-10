@@ -924,7 +924,7 @@ fn test_merge_nodes_single_source() {
     })
     .unwrap();
 
-    let new_id = repo.merge_nodes(&[1], "single-merge", MergeMode::Union).unwrap();
+    let _new_id = repo.merge_nodes(&[1], "single-merge", MergeMode::Union).unwrap();
     let lines = repo.get_current_lines().unwrap();
     assert_eq!(lines, vec!["A", "B"]);
 }
@@ -1001,7 +1001,7 @@ fn test_merge_nodes_subtract() {
 
     let new_node = repo.history_tree().get_node(new_id).unwrap();
     match new_node.operation.as_ref().unwrap() {
-        Operation::Merge { sources, mode } => {
+        Operation::Merge { sources: _, mode } => {
             assert!(matches!(mode, MergeMode::Subtract));
         }
         _ => panic!("Expected Merge operation"),
@@ -1044,7 +1044,7 @@ fn test_merge_nodes_xor() {
 
     let new_node = repo.history_tree().get_node(new_id).unwrap();
     match new_node.operation.as_ref().unwrap() {
-        Operation::Merge { sources, mode } => {
+        Operation::Merge { sources: _, mode } => {
             assert!(matches!(mode, MergeMode::Xor));
         }
         _ => panic!("Expected Merge operation"),
@@ -1083,7 +1083,7 @@ fn test_merge_nodes_three_sources_union() {
     })
     .unwrap();
 
-    let new_id = repo.merge_nodes(&[1, 2, 3], "three-union", MergeMode::Union).unwrap();
+    let _new_id = repo.merge_nodes(&[1, 2, 3], "three-union", MergeMode::Union).unwrap();
     let lines = repo.get_current_lines().unwrap();
     assert_eq!(lines.len(), 5);
     for ch in &["A", "B", "C", "D", "E"] {

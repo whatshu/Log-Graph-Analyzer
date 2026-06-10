@@ -739,7 +739,7 @@ mod tests {
         let (op, inv) = make_filter_op();
         let id1 = tree.add_child(0, op, inv);
         let (op2, inv2) = make_filter_op();
-        let id2 = tree.add_child(id1, op2, inv2);
+        let _id2 = tree.add_child(id1, op2, inv2);
 
         let desc = tree.descendants(0);
         assert_eq!(desc.len(), 3);
